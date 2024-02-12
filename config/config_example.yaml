@@ -1,0 +1,27 @@
+session: concert
+
+roscore:
+  cmd: ros1; roscore
+  machine: alaurenzi@localhost
+  ready_check: rostopic list
+
+xbot2:
+  cmd: ros1; xbot2-core --hw dummy -V -C $(rospack find centauro_config)/centauro_basic.yaml
+  machine: alaurenzi@localhost  
+  depends:
+    - roscore
+  ready_check: timeout 3 rostopic echo -n 1 /xbotcore/status
+
+homing:
+  cmd: ros1; rosservice call /xbotcore/homing/switch 1
+  persistent: false
+  machine: alaurenzi@localhost  
+  depends:
+    - xbot2
+
+cartesio:
+  cmd: ros1; mon launch centauro_cartesio_config centauro_manipulation.launch 
+  machine: alaurenzi@localhost
+  depends:
+   - homing
+  ready_check: timeout 3 rostopic echo -n 1 /cartesian/solution

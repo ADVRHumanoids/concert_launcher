@@ -1,0 +1,7 @@
+
+
+class ConfigOptions:
+
+    verbose = False 
+
+    
