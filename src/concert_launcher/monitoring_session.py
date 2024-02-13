@@ -90,9 +90,9 @@ def create_monitoring_session(process: str, cfg: Dict, level=0):
     split_type = '-h' if num_rows == 1 else '-v'
         
     remote.run_cmd(ssh,
-                    f'tmux split-window {split_type} -t {tmux_session}:0.{pane_to_split} "{cmd}"',
-                    interactive=False,
-                    throw_on_failure=False)
+                   f'tmux split-window {split_type} -t {tmux_session}:0.{pane_to_split} "{cmd}"',
+                   interactive=False,
+                   throw_on_failure=False)
     
     pane_to_split += num_rows
 
@@ -103,8 +103,9 @@ def create_monitoring_session(process: str, cfg: Dict, level=0):
         num_rows += 1
 
     # redraw layout
+    layout = 'even-horizontal' if num_rows == 1 else 'tiled'
     remote.run_cmd(ssh,
-                   f'tmux select-layout -t {tmux_session}:0 tiled',
+                   f'tmux select-layout -t {tmux_session}:0 {layout}',
                    interactive=False,
                    throw_on_failure=False)
     

@@ -78,3 +78,53 @@ def execute_process(process, cfg):
 
 
     pprint(f'ready')
+
+
+@print_utils.ProgressReporter.count_calls
+def kill(process, cfg):
+
+    pprint = print_utils.ProgressReporter.get_print_fn(process)
+    verbose = config.ConfigOptions.verbose
+    
+    pfield = cfg[process]
+    machine = pfield['machine']
+    cmd = pfield['cmd']
+    ready_check = pfield.get('ready_check', None)
+    persistent = pfield.get('persistent', True)
+    session = cfg['session']
+    
+    # connect to remote
+    if machine not in connection_map.keys():
+        pprint(f'opening ssh connection to remote {machine}')
+        ssh = Connection(machine)
+        ssh.put(os.path.dirname(__file__) + "/concert_launcher_wrapper.bash", '/tmp')
+        connection_map[machine] = ssh 
+    else:
+        ssh = connection_map[machine]
+
+    # non-persistent are just one shot commands
+    if persistent:
+        pprint('killing with SIGINT')
+        remote.run_cmd(ssh,
+                       f'tmux send-keys -t {session}:{process} C-c C-m',
+                       interactive=False,
+                       throw_on_failure=True)
+        
+    # look up dependant processes
+    for pname, pfield in cfg.items():
+
+        if pname == process:
+            continue
+        
+        try:
+            deps = pfield['depends']
+        except:
+            continue
+
+        if process in deps:
+            
+            pprint(f'found dependant process {pname}')
+
+            kill(pname, cfg)
+
+        
