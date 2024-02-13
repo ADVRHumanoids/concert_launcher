@@ -37,7 +37,7 @@ def run_cmd(remote: Connection, cmd: str, timeout=None, interactive=True, throw_
 def tmux_ls(remote: Connection, session: str):
     
     retcode, stdout, _ = run_cmd(remote, 
-                                 "tmux list-w -F '#{session_name} #{window_name} #{pane_pid} #{pane_dead}'",
+                                 "tmux list-w -t %s -F '#{session_name} #{window_name} #{pane_pid} #{pane_dead}'" % session,
                                  interactive=False,
                                  throw_on_failure=False)
     
@@ -97,7 +97,12 @@ def tmux_spawn_new_session(remote: Connection, session: str, window: str, cmd: s
     if len(lsdict) == 0:
 
         run_cmd(remote, 
-                f"tmux new -d -s {session} -n {window} /tmp/concert_launcher_wrapper.bash {window} '{cmd}'",
+                f"tmux new-session -d -s {session} -n {window} /tmp/concert_launcher_wrapper.bash {window} '{cmd}'",
+                interactive=False,
+                throw_on_failure=True)
+        
+        run_cmd(remote, 
+                f"tmux new-session -d -t {session} -s {window}",
                 interactive=False,
                 throw_on_failure=True)
 
@@ -119,7 +124,32 @@ def tmux_spawn_new_session(remote: Connection, session: str, window: str, cmd: s
     elif window not in lsdict.keys():
 
         run_cmd(remote, 
-                f"tmux new-window -d -t {session} -n {window} /tmp/concert_launcher_wrapper.bash {window} '{cmd}'",
+                f"tmux new-session -d -t {session} -s {window}",
+                interactive=False,
+                throw_on_failure=True)
+        
+        run_cmd(remote, 
+                f"tmux set -t {window} status off",
+                interactive=False,
+                throw_on_failure=True)   
+        
+        run_cmd(remote, 
+                f"tmux set -t {window} mouse on",
+                interactive=False,
+                throw_on_failure=True)   
+        
+        run_cmd(remote, 
+                f"tmux set -t {window} remain-on-exit on",
+                interactive=False,
+                throw_on_failure=True)
+    
+        run_cmd(remote, 
+                f"tmux set -t {window} history-limit 10000",
+                interactive=False,
+                throw_on_failure=True)
+
+        run_cmd(remote, 
+                f"tmux new-window -d -t {window} -n {window} /tmp/concert_launcher_wrapper.bash {window} '{cmd}'",
                 interactive=False,
                 throw_on_failure=True)
         

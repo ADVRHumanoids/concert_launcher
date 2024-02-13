@@ -53,11 +53,8 @@ def execute_process(process, cfg):
     
     if session_exists:
         pprint(f'exists')
-        logger.info(f'process {process} is already running')
-
     else:
         pprint(f'running process')
-        logger.info(f'running process {process}')
         remote.tmux_spawn_new_session(ssh, session, process, cmd)
 
     
@@ -80,5 +77,4 @@ def execute_process(process, cfg):
                 raise RuntimeError(f'process {session}:{process} no longer exists')
 
 
-    logger.info(f'{process} is ready')
     pprint(f'ready')

@@ -13,7 +13,7 @@ xbot2:
   ready_check: timeout 3 rostopic echo -n 1 /xbotcore/status
 
 homing:
-  cmd: ros1; rosservice call /xbotcore/homing/switch 1
+  cmd: ros1; rosservice call /xbotcore/homing/switch 1; sleep 5
   persistent: false
   machine: alaurenzi@localhost  
   depends:
