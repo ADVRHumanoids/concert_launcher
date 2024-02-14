@@ -105,6 +105,11 @@ def tmux_spawn_new_session(remote: Connection, session: str, window: str, cmd: s
                 f"tmux new-session -d -t {session} -s {window}",
                 interactive=False,
                 throw_on_failure=True)
+        
+        run_cmd(remote, 
+                f"tmux set -t {window}:{window} status off",
+                interactive=False,
+                throw_on_failure=True)  
 
         run_cmd(remote, 
                 f"tmux set -t {session} mouse on",
