@@ -101,15 +101,6 @@ def kill(process, cfg):
     else:
         ssh = connection_map[machine]
 
-    # non-persistent are just one shot commands
-    if persistent:
-        pprint('killing with SIGINT')
-        remote.run_cmd(ssh,
-                       f'tmux send-keys -t {session}:{process} C-c C-m',
-                       interactive=False,
-                       throw_on_failure=True)
-        
-        
     # look up dependant processes
     for pname, pfield in cfg.items():
 
@@ -126,6 +117,20 @@ def kill(process, cfg):
             pprint(f'found dependant process {pname}')
 
             kill(pname, cfg)
+
+    # non-persistent are just one shot commands
+    if persistent:
+        if not remote.tmux_session_alive(ssh, session, process):
+            pprint('not running')
+        else:
+            pprint('killing with SIGINT')
+            remote.run_cmd(ssh,
+                        f'tmux send-keys -t {session}:{process} C-c C-m',
+                        interactive=False,
+                        throw_on_failure=True)
+        
+        
+    
 
         
 

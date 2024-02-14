@@ -15,10 +15,6 @@ def do_main():
     # cmd line args
     parser = argparse.ArgumentParser(description='cose')
 
-    parser.add_argument('--log-level', '-l', dest='log_level', default='WARNING', 
-                        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
-                        help='set the logging level')
-
     command = parser.add_subparsers(dest='command')
 
     run = command.add_parser('run', help='run the specified process and its dependencies')
@@ -29,15 +25,27 @@ def do_main():
 
     run.add_argument('--monitor', '-m', action='store_true', help='create a local tmux monitoring session')
 
+    run.add_argument('--log-level', '-l', dest='log_level', default='WARNING', 
+                        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
+                        help='set the logging level')
+
     kill = command.add_parser('kill', help='send signal to the specified process and its dependant packages')
 
     kill.add_argument('process', help='process name to run')
 
     kill.add_argument('--config', '-c', default='./launcher.yaml', type=str, help='path config file')
 
+    kill.add_argument('--log-level', '-l', dest='log_level', default='WARNING', 
+                        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
+                        help='set the logging level')
+
     status = command.add_parser('status', help='show status information for all processes')
 
     status.add_argument('--config', '-c', default='./launcher.yaml', type=str, help='path config file')
+
+    status.add_argument('--log-level', '-l', dest='log_level', default='WARNING', 
+                        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
+                        help='set the logging level')
     
     args = parser.parse_args()
 
