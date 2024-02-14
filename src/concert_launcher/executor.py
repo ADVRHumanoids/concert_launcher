@@ -97,7 +97,6 @@ def kill(process, cfg):
     if machine not in connection_map.keys():
         pprint(f'opening ssh connection to remote {machine}')
         ssh = Connection(machine)
-        ssh.put(os.path.dirname(__file__) + "/concert_launcher_wrapper.bash", '/tmp')
         connection_map[machine] = ssh 
     else:
         ssh = connection_map[machine]
@@ -109,6 +108,7 @@ def kill(process, cfg):
                        f'tmux send-keys -t {session}:{process} C-c C-m',
                        interactive=False,
                        throw_on_failure=True)
+        
         
     # look up dependant processes
     for pname, pfield in cfg.items():
@@ -128,3 +128,56 @@ def kill(process, cfg):
             kill(pname, cfg)
 
         
+
+@print_utils.ProgressReporter.count_calls
+def status(process, cfg):
+
+    session = cfg['session']
+
+    for process, pfield in cfg.items():
+
+        if not isinstance(pfield, dict):
+            continue
+
+        pprint = print_utils.ProgressReporter.get_print_fn(process)
+        verbose = config.ConfigOptions.verbose
+        
+        pfield = cfg[process]
+        machine = pfield['machine']
+        cmd = pfield['cmd']
+        ready_check = pfield.get('ready_check', None)
+        persistent = pfield.get('persistent', True)
+        
+        # connect to remote
+        if machine not in connection_map.keys():
+            pprint(f'opening ssh connection to remote {machine}')
+            ssh = Connection(machine)
+            ssh.put(os.path.dirname(__file__) + "/print_ps_tree.py", '/tmp/concert_launcher_print_ps_tree.py')
+            connection_map[machine] = ssh 
+        else:
+            ssh = connection_map[machine]
+
+
+        lsdict = remote.tmux_ls(ssh, session)
+
+        
+
+        try:
+
+            pinfo = lsdict[process]
+
+            if pinfo['dead']:
+                pprint('dead')
+                continue
+
+            retcode, stdout, _ = remote.run_cmd(ssh,
+                           f'python3 /tmp/concert_launcher_print_ps_tree.py {pinfo["pid"]}',
+                           interactive=False,
+                           throw_on_failure=True)
+            
+            pprint('process tree: ')
+            print('  ', stdout.replace('\n', '\n  '))
+
+        except:
+            pass
+    

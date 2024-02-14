@@ -1,6 +1,7 @@
 import argparse
 import argcomplete
 import logging
+import time
 import os
 import yaml
 from typing import List, Dict
@@ -33,6 +34,10 @@ def do_main():
     kill.add_argument('process', help='process name to run')
 
     kill.add_argument('--config', '-c', default='./launcher.yaml', type=str, help='path config file')
+
+    status = command.add_parser('status', help='show status information for all processes')
+
+    status.add_argument('--config', '-c', default='./launcher.yaml', type=str, help='path config file')
     
     args = parser.parse_args()
 
@@ -66,6 +71,9 @@ def do_main():
     if args.command == 'kill':
 
         executor.kill(process=args.process, cfg=cfg)
+
+    if args.command == 'status':
+        executor.status(None, cfg=cfg)
 
 
 def main():
