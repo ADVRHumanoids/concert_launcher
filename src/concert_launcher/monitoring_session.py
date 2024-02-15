@@ -17,8 +17,15 @@ pkg_already_processed = set()
 
 def create_monitoring_session(process: str, cfg: Dict, level=0):
 
-    # parse config
     session = cfg['session']
+
+    if process is None:
+        for pname, pfield in cfg.items():
+            if not isinstance(pfield, dict):
+                continue
+            create_monitoring_session(pname, cfg, 0)
+        return
+
     pfield = cfg[process]
     machine = pfield['machine']
     tmux_session = f'{session}_mon'
@@ -74,6 +81,11 @@ def create_monitoring_session(process: str, cfg: Dict, level=0):
                 throw_on_failure=True)   
         
         remote.run_cmd(ssh, 
+                f"tmux set -t {tmux_session} aggressive-resize on",
+                interactive=False,
+                throw_on_failure=True)   
+        
+        remote.run_cmd(ssh, 
                 f"tmux set -t {tmux_session} remain-on-exit on",
                 interactive=False,
                 throw_on_failure=True)
@@ -108,4 +120,7 @@ def create_monitoring_session(process: str, cfg: Dict, level=0):
                    f'tmux select-layout -t {tmux_session}:0 {layout}',
                    interactive=False,
                    throw_on_failure=False)
+    
+    # return session name
+    return tmux_session
     

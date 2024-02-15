@@ -1,6 +1,7 @@
 from typing import List, Dict
 import os
 import logging
+import time
 from fabric import Connection
 from concert_launcher import print_utils, config, remote
 
@@ -83,6 +84,23 @@ def execute_process(process, cfg):
 @print_utils.ProgressReporter.count_calls
 def kill(process, cfg):
 
+
+    if process is None:
+        
+        pprint = print_utils.ProgressReporter.get_print_fn('all')
+
+        pprint('killing all processes')
+
+        for process, pfield in cfg.items():
+
+            if not isinstance(pfield, dict):
+                continue
+            
+            kill(process, cfg)
+
+        return
+
+
     pprint = print_utils.ProgressReporter.get_print_fn(process)
     verbose = config.ConfigOptions.verbose
     
@@ -120,15 +138,29 @@ def kill(process, cfg):
 
     # non-persistent are just one shot commands
     if persistent:
-        if not remote.tmux_session_alive(ssh, session, process):
+        lsdict = remote.tmux_ls(ssh, session)
+        if process not in lsdict.keys():
             pprint('not running')
+        elif lsdict[process]['dead']:
+            pprint('already dead')
         else:
             pprint('killing with SIGINT')
-            remote.run_cmd(ssh,
-                        f'tmux send-keys -t {session}:{process} C-c C-m',
+            pid = lsdict[process]['pid']
+            remote.run_cmd(ssh, f'tmux send-keys -t {session}:{process} C-c C-m Enter',
                         interactive=False,
-                        throw_on_failure=True)
-        
+                        throw_on_failure=True) 
+            attempts = 0
+            while remote.tmux_session_alive(ssh, session, process):
+                pprint('waiting for exit..')
+                time.sleep(1)
+                attempts += 1
+                if attempts > 5:
+                    pprint('killing with SIGKILL')
+                    remote.run_cmd(ssh, f'tmux send-keys -t {session}:{process} C-\\\ C-m Enter',
+                        interactive=False,
+                        throw_on_failure=True) 
+
+            
         
     
 

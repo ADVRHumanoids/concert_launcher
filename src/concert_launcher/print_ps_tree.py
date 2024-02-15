@@ -1,11 +1,13 @@
 import psutil
 import sys 
+import os
 
 def get_process_info(pid, complete=False):
     try:
         process = psutil.Process(pid)
         ppid = process.ppid()
         cmdline = process.cmdline()
+        
         if not complete or '/tmp/concert_launcher_wrapper.bash' in cmdline or cmdline[0] == 'tee':
             return ppid, cmdline, 0, 0
         cpu_usage = process.cpu_percent(.11)
@@ -21,7 +23,7 @@ def process_tree_info(pid, level=0):
     if info is not None:
         ppid, cmdline, cpu_usage, ram_usage = info
         if level >= 2 and '/tmp/concert_launcher_wrapper.bash' not in cmdline and cmdline[0] != 'tee':
-            print(f"{' ' * ((level-2) * 2)}PID: {pid}  ({' '.join(cmdline[:2])} ...)  CPU: {cpu_usage}  RAM: {ram_usage:.2f} MB")
+            print(f"{' ' * ((level-2) * 2)}PID: {pid} ({' '.join(cmdline[:2])} ...)  CPU: {cpu_usage}  RAM: {ram_usage:.2f} MB")
 
         for child in psutil.Process(pid).children():
             process_tree_info(child.pid, level + 1)

@@ -16,6 +16,7 @@ def do_main():
     parser = argparse.ArgumentParser(description='cose')
 
     command = parser.add_subparsers(dest='command')
+    command.required = True
 
     run = command.add_parser('run', help='run the specified process and its dependencies')
     
@@ -23,7 +24,7 @@ def do_main():
 
     run.add_argument('--config', '-c', default='./launcher.yaml', type=str, help='path config file')
 
-    run.add_argument('--monitor', '-m', action='store_true', help='create a local tmux monitoring session')
+    run.add_argument('--monitor', '-m', action='store_true', help='spawn a local tmux monitoring session')
 
     run.add_argument('--log-level', '-l', dest='log_level', default='WARNING', 
                         choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
@@ -31,7 +32,9 @@ def do_main():
 
     kill = command.add_parser('kill', help='send signal to the specified process and its dependant packages')
 
-    kill.add_argument('process', help='process name to run')
+    kill.add_argument('process', nargs='?', default=None, help='process name to run')
+
+    kill.add_argument('--all', '-a', action='store_true', help='kill all processes')
 
     kill.add_argument('--config', '-c', default='./launcher.yaml', type=str, help='path config file')
 
@@ -44,6 +47,14 @@ def do_main():
     status.add_argument('--config', '-c', default='./launcher.yaml', type=str, help='path config file')
 
     status.add_argument('--log-level', '-l', dest='log_level', default='WARNING', 
+                        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
+                        help='set the logging level')
+    
+    mon = command.add_parser('mon', help='spawn a tmux monitoring session on the local machine')
+
+    mon.add_argument('--config', '-c', default='./launcher.yaml', type=str, help='path config file')
+
+    mon.add_argument('--log-level', '-l', dest='log_level', default='WARNING', 
                         choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
                         help='set the logging level')
     
@@ -66,22 +77,32 @@ def do_main():
     logger.info(f'loading config {config_path}')
 
     cfg = yaml.safe_load(open(config_path))
+    
 
     if args.command == 'run':
 
         # create local viewer
         if args.monitor:
             monitoring_session.create_monitoring_session(process=args.process, cfg=cfg)
+            os.system('x-terminal-emulator -x "tmux a -t concert_mon; bash"')
 
         # run processes
         executor.execute_process(process=args.process, cfg=cfg)
 
     if args.command == 'kill':
 
-        executor.kill(process=args.process, cfg=cfg)
+        proc_to_kill = None if args.all else args.process
+
+        executor.kill(process=proc_to_kill, cfg=cfg)
 
     if args.command == 'status':
+
         executor.status(None, cfg=cfg)
+
+    if args.command == 'mon':
+
+        monitoring_session.create_monitoring_session(process=None, cfg=cfg)
+        os.system('x-terminal-emulator -x "tmux a -t concert_mon; bash"')
 
 
 def main():
