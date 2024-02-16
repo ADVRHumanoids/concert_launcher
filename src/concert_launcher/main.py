@@ -52,6 +52,8 @@ def do_main():
     
     mon = command.add_parser('mon', help='spawn a tmux monitoring session on the local machine')
 
+    mon.add_argument('--replace', '-r', action='store_true', help='run monitoring session in current shell')
+
     mon.add_argument('--config', '-c', default='./launcher.yaml', type=str, help='path config file')
 
     mon.add_argument('--log-level', '-l', dest='log_level', default='WARNING', 
@@ -80,14 +82,20 @@ def do_main():
     
     session = cfg['session']
 
+    def spawn_monitor():
+        if args.command == 'mon' and args.replace:
+            os.execvpe('bash', ['bash', '-ic', f'tmux attach -t {session}_mon'], env=os.environ)
+        else:
+            os.system(f'x-terminal-emulator -x "tmux a -t {session}_mon; bash"')
+
     if args.command == 'run':
 
         # create local viewer
         if args.monitor:
-            
+
             monitoring_session.create_monitoring_session(process=args.process, cfg=cfg)
             
-            os.system(f'x-terminal-emulator -x "tmux a -t {session}_mon; bash"')
+            spawn_monitor()
 
         # run processes
         executor.execute_process(process=args.process, cfg=cfg)
@@ -106,7 +114,7 @@ def do_main():
 
         monitoring_session.create_monitoring_session(process=None, cfg=cfg)
         
-        os.system(f'x-terminal-emulator -x "tmux a -t {session}_mon; bash"')
+        spawn_monitor()
 
 
 def main():
