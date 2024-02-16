@@ -13,7 +13,7 @@ from concert_launcher import monitoring_session
 def do_main():
 
     # cmd line args
-    parser = argparse.ArgumentParser(description='cose')
+    parser = argparse.ArgumentParser(description='A minimal YAML and TMUX based process launcher')
 
     command = parser.add_subparsers(dest='command')
     command.required = True
@@ -30,7 +30,7 @@ def do_main():
                         choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
                         help='set the logging level')
 
-    kill = command.add_parser('kill', help='send signal to the specified process and its dependant packages')
+    kill = command.add_parser('kill', help='kill the specified process and its dependant packages')
 
     kill.add_argument('process', nargs='?', default=None, help='process name to run')
 
