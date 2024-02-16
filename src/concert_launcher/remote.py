@@ -1,7 +1,7 @@
 from fabric import Connection
 from invoke.exceptions import CommandTimedOut
+import invoke
 import logging
-import subprocess
 import shutil
 from . import config
 
@@ -28,15 +28,15 @@ def run_cmd(remote: Connection, cmd: str, timeout=None, interactive=True, throw_
     logger.info(f'running {cmd_real}')
 
     if remote is None:
-        res: subprocess.CompletedProcess = subprocess.run(cmd_real, shell=True, capture_output=True, universal_newlines=True, timeout=timeout)
-        exitcode = res.returncode
-        stdout = res.stdout
-        stderr = res.stderr
+        remote = invoke
+        pty = True
     else:
-        res = remote.run(cmd_real, warn=True, hide=True, echo=verbose, timeout=timeout)
-        exitcode = res.exited
-        stdout = res.stdout
-        stderr = res.stderr
+        pty = False
+
+    res = remote.run(cmd_real, warn=True, hide=True, echo=verbose, timeout=timeout, pty=pty)
+    exitcode = res.exited
+    stdout = res.stdout
+    stderr = res.stderr
 
     logger.info(f'{cmd} exitcode: {exitcode}')
 

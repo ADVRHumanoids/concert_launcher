@@ -96,7 +96,7 @@ def execute_process(process, cfg):
                 logger.info(f'ready check for process {process} returned 0')
                 break
 
-            if not remote.tmux_session_alive(ssh, session, process):
+            if not remote.tmux_session_alive(ssh, e.session, process):
 
                 raise RuntimeError(f'process {e.session}:{process} no longer exists')
 
