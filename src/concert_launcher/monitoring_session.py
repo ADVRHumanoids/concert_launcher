@@ -27,7 +27,9 @@ def create_monitoring_session(process: str, cfg: Dict, level=0):
         return
 
     pfield = cfg[process]
-    machine = pfield['machine']
+    machine = pfield.get('machine', None)
+    if machine == 'local':
+        machine = None
     tmux_session = f'{session}_mon'
     deps = pfield.get('depends', [])
 
@@ -47,21 +49,21 @@ def create_monitoring_session(process: str, cfg: Dict, level=0):
         return
 
     # define monitoring command (connect ssh -> wait for session -> attach)
-    cmd = f"ssh {machine} -tt 'while ! tmux has-session -t {process}:{process}; do echo waiting for session {process} to exist..; sleep 1; done; unset TMUX; tmux a -t {process}:{process}'"
-
+    cmd = f"while ! tmux has-session -t {process}:{process}; do echo waiting for session {process} to exist..; sleep 1; done; unset TMUX; tmux a -t {process}:{process}"
+    
+    if machine is not None:
+        cmd = f"ssh {machine} -tt '{cmd}'"
+    
     # on first time, ssh connection to local pc (tbd: support remote maybe)
     # and session creation
-    global ssh
     global num_rows
     global num_panes
     global pane_to_split
 
     print(f'adding session {process} to monitor')
 
-    if ssh is None:  
+    if num_panes == 0:  
     
-        ssh = Connection(f'{os.environ["USER"]}@localhost')
-
         # kill and re-create monitor session
         remote.run_cmd(ssh,
                    f'tmux kill-session -t {tmux_session}',

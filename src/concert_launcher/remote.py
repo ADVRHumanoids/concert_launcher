@@ -1,11 +1,20 @@
 from fabric import Connection
 from invoke.exceptions import CommandTimedOut
 import logging
-
+import subprocess
+import shutil
 from . import config
 
 # logger
 logger = logging.getLogger(__name__)
+
+def putfile(remote: Connection, local_path, remote_path):
+    
+    if remote is None:
+        shutil.copy(local_path, remote_path)
+    else:
+        remote.put(local_path, remote_path)
+
 
 def run_cmd(remote: Connection, cmd: str, timeout=None, interactive=True, throw_on_failure=False):
     
@@ -17,21 +26,28 @@ def run_cmd(remote: Connection, cmd: str, timeout=None, interactive=True, throw_
         cmd_real = cmd
     
     logger.info(f'running {cmd_real}')
-    
-    result = remote.run(cmd_real, warn=True, hide=True, echo=verbose, timeout=timeout)
 
-    logger.info(f'{cmd} exitcode: {result.exited}')
+    if remote is None:
+        res: subprocess.CompletedProcess = subprocess.run(cmd_real, shell=True, capture_output=True, universal_newlines=True, timeout=timeout)
+        exitcode = res.returncode
+        stdout = res.stdout
+        stderr = res.stderr
+    else:
+        res = remote.run(cmd_real, warn=True, hide=True, echo=verbose, timeout=timeout)
+        exitcode = res.exited
+        stdout = res.stdout
+        stderr = res.stderr
 
-    for l in result.stdout.split('\n'):
-        logger.info(f'{cmd} stdout: {l}')
+    logger.info(f'{cmd} exitcode: {exitcode}')
 
-    for l in result.stderr.split('\n'):
-        logger.info(f'{cmd} stderr: {l}')
+    logger.info(f'{cmd} stdout: {stdout}')
 
-    if throw_on_failure and result.exited != 0:
-        raise RuntimeError(f'command {cmd} returned {result.exited}')
+    logger.info(f'{cmd} stderr: {stderr}')
 
-    return result.exited, result.stdout.strip(), result.stderr.strip()
+    if throw_on_failure and exitcode != 0:
+        raise RuntimeError(f'command {cmd} returned {exitcode}')
+
+    return exitcode, stdout.strip(), stderr.strip()
 
 
 def tmux_ls(remote: Connection, session: str):

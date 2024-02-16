@@ -16,7 +16,9 @@ def execute_process(process, cfg):
     verbose = config.ConfigOptions.verbose
     
     pfield = cfg[process]
-    machine = pfield['machine']
+    machine = pfield.get('machine', None)
+    if machine == 'local':
+        machine = None
     cmd = pfield['cmd']
     ready_check = pfield.get('ready_check', None)
     persistent = pfield.get('persistent', True)
@@ -29,13 +31,17 @@ def execute_process(process, cfg):
         execute_process(dep, cfg)
 
     # connect to remote
-    if machine not in connection_map.keys():
+    if machine is not None and machine not in connection_map.keys():
         pprint(f'opening ssh connection to remote {machine}')
         ssh = Connection(machine)
-        ssh.put(os.path.dirname(__file__) + "/concert_launcher_wrapper.bash", '/tmp')
         connection_map[machine] = ssh 
-    else:
+    elif machine is not None:
         ssh = connection_map[machine]
+    else:
+        ssh = None 
+
+    # copy needed files to remote
+    remote.putfile(ssh, os.path.dirname(__file__) + "/concert_launcher_wrapper.bash", '/tmp')
 
     # non-persistent are just one shot commands
     if not persistent:
@@ -105,20 +111,22 @@ def kill(process, cfg):
     verbose = config.ConfigOptions.verbose
     
     pfield = cfg[process]
-    machine = pfield['machine']
-    cmd = pfield['cmd']
-    ready_check = pfield.get('ready_check', None)
+    machine = pfield.get('machine', None)
+    if machine == 'local':
+        machine = None
     persistent = pfield.get('persistent', True)
     session = cfg['session']
     
     # connect to remote
-    if machine not in connection_map.keys():
+    if machine is not None and machine not in connection_map.keys():
         pprint(f'opening ssh connection to remote {machine}')
         ssh = Connection(machine)
         connection_map[machine] = ssh 
-    else:
+    elif machine is not None:
         ssh = connection_map[machine]
-
+    else:
+        ssh = None 
+        
     # look up dependant processes
     for pname, pfield in cfg.items():
 
@@ -180,24 +188,26 @@ def status(process, cfg):
         verbose = config.ConfigOptions.verbose
         
         pfield = cfg[process]
-        machine = pfield['machine']
+        machine = pfield.get('machine', None)
+        if machine == 'local':
+            machine = None
         cmd = pfield['cmd']
         ready_check = pfield.get('ready_check', None)
         persistent = pfield.get('persistent', True)
         
         # connect to remote
-        if machine not in connection_map.keys():
+        if machine is not None and machine not in connection_map.keys():
             pprint(f'opening ssh connection to remote {machine}')
             ssh = Connection(machine)
-            ssh.put(os.path.dirname(__file__) + "/print_ps_tree.py", '/tmp/concert_launcher_print_ps_tree.py')
             connection_map[machine] = ssh 
-        else:
+        elif machine is not None:
             ssh = connection_map[machine]
+        else:
+            ssh = None
 
+        remote.putfile(ssh, os.path.dirname(__file__) + "/print_ps_tree.py", '/tmp/concert_launcher_print_ps_tree.py')
 
         lsdict = remote.tmux_ls(ssh, session)
-
-        
 
         try:
 
