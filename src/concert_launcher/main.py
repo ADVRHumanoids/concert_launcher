@@ -83,8 +83,10 @@ def do_main():
 
         # create local viewer
         if args.monitor:
-            monitoring_session.create_monitoring_session(process=args.process, cfg=cfg)
-            os.system('x-terminal-emulator -x "tmux a -t concert_mon; bash"')
+            session_name = monitoring_session.create_monitoring_session(process=args.process, 
+                                                                        cfg=cfg)
+            
+            os.system(f'x-terminal-emulator -x "tmux a -t {session_name}; bash"')
 
         # run processes
         executor.execute_process(process=args.process, cfg=cfg)
@@ -101,13 +103,15 @@ def do_main():
 
     if args.command == 'mon':
 
-        monitoring_session.create_monitoring_session(process=None, cfg=cfg)
-        os.system('x-terminal-emulator -x "tmux a -t concert_mon; bash"')
+        session_name = monitoring_session.create_monitoring_session(process=None, 
+                                                                    cfg=cfg)
+        
+        os.system(f'x-terminal-emulator -x "tmux a -t {session_name}; bash"')
 
 
 def main():
+
     do_main()
     
-
 if __name__ == '__main__':
     main()

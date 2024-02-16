@@ -3,6 +3,7 @@ import logging
 from . import remote
 from fabric import Connection
 import os
+from .executor import ConfigParser
 
 ssh = None
 
@@ -17,8 +18,6 @@ pkg_already_processed = set()
 
 def create_monitoring_session(process: str, cfg: Dict, level=0):
 
-    session = cfg['session']
-
     if process is None:
         for pname, pfield in cfg.items():
             if not isinstance(pfield, dict):
@@ -26,15 +25,10 @@ def create_monitoring_session(process: str, cfg: Dict, level=0):
             create_monitoring_session(pname, cfg, 0)
         return
 
-    pfield = cfg[process]
-    machine = pfield.get('machine', None)
-    if machine == 'local':
-        machine = None
-    tmux_session = f'{session}_mon'
-    deps = pfield.get('depends', [])
+    e = ConfigParser(process, cfg)
 
     # process deps
-    for dep in deps:
+    for dep in e.deps:
         logging.info(f'{process} depends on {dep}')
         create_monitoring_session(dep, cfg, level+1)
 
@@ -45,14 +39,14 @@ def create_monitoring_session(process: str, cfg: Dict, level=0):
     pkg_already_processed.add(process)
 
     # if not persistent, exit
-    if not pfield.get('persistent', True):
+    if not e.persistent:
         return
 
     # define monitoring command (connect ssh -> wait for session -> attach)
     cmd = f"while ! tmux has-session -t {process}:{process}; do echo waiting for session {process} to exist..; sleep 1; done; unset TMUX; tmux a -t {process}:{process}"
     
-    if machine is not None:
-        cmd = f"ssh {machine} -tt '{cmd}'"
+    if e.machine is not None:
+        cmd = f"ssh {e.machine} -tt '{cmd}'"
     
     # on first time, ssh connection to local pc (tbd: support remote maybe)
     # and session creation
@@ -61,6 +55,8 @@ def create_monitoring_session(process: str, cfg: Dict, level=0):
     global pane_to_split
 
     print(f'adding session {process} to monitor')
+
+    tmux_session = f'{e.session}_mon'
 
     if num_panes == 0:  
     
