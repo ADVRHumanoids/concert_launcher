@@ -18,12 +18,14 @@ def get_process_info(pid, complete=False):
 
 def process_tree_info(pid, level=0):
 
-    info = get_process_info(pid, level >= 2)
+    min_level = 0
+
+    info = get_process_info(pid, level >= min_level)
     
     if info is not None:
         ppid, cmdline, cpu_usage, ram_usage = info
-        if level >= 2 and '/tmp/concert_launcher_wrapper.bash' not in cmdline and cmdline[0] != 'tee':
-            print(f"{' ' * ((level-2) * 2)}PID: {pid} ({' '.join(cmdline[:2])} ...)  CPU: {cpu_usage}  RAM: {ram_usage:.2f} MB")
+        if level >= min_level and '/tmp/concert_launcher_wrapper.bash' not in cmdline and cmdline[0] != 'tee':
+            print(f"{' ' * ((level-min_level) * 2)}PID: {pid} ({' '.join(cmdline[:2])} ...)  CPU: {cpu_usage}  RAM: {ram_usage:.2f} MB")
 
         for child in psutil.Process(pid).children():
             process_tree_info(child.pid, level + 1)

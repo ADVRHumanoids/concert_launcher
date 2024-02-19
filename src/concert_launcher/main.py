@@ -5,12 +5,19 @@ import time
 import os
 import yaml
 from typing import List, Dict
+import asyncio
+
+import warnings
+from cryptography.utils import CryptographyDeprecationWarning
+with warnings.catch_warnings():
+    warnings.filterwarnings('ignore', category=CryptographyDeprecationWarning)
+    import paramiko
 
 from concert_launcher import config
 from concert_launcher import executor
 from concert_launcher import monitoring_session
 
-def do_main():
+async def do_main():
 
     # cmd line args
     parser = argparse.ArgumentParser(description='A minimal YAML and TMUX based process launcher')
@@ -80,7 +87,7 @@ def do_main():
 
     cfg = yaml.safe_load(open(config_path))
     
-    session = cfg['session']
+    session = cfg['context']['session']
 
     def spawn_monitor():
         if args.command == 'mon' and args.replace:
@@ -93,33 +100,34 @@ def do_main():
         # create local viewer
         if args.monitor:
 
-            monitoring_session.create_monitoring_session(process=args.process, cfg=cfg)
+            await monitoring_session.create_monitoring_session(process=args.process, cfg=cfg)
             
             spawn_monitor()
 
         # run processes
-        executor.execute_process(process=args.process, cfg=cfg)
+        await executor.execute_process(process=args.process, cfg=cfg)
 
     if args.command == 'kill':
 
         proc_to_kill = None if args.all else args.process
 
-        executor.kill(process=proc_to_kill, cfg=cfg)
+        await executor.kill(process=proc_to_kill, cfg=cfg)
 
     if args.command == 'status':
 
-        executor.status(None, cfg=cfg)
+        await executor.status(None, cfg=cfg)
 
     if args.command == 'mon':
 
-        monitoring_session.create_monitoring_session(process=None, cfg=cfg)
+        await monitoring_session.create_monitoring_session(process=None, cfg=cfg)
         
         spawn_monitor()
 
-
+    
 def main():
 
-    do_main()
+    asyncio.get_event_loop().run_until_complete(do_main())
     
+
 if __name__ == '__main__':
     main()

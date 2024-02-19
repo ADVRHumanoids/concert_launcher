@@ -13,22 +13,22 @@ class ProgressReporter:
         This is meant to be applied to the install function
         """
         @functools.wraps(fn)
-        def wrapper(*args, **kwargs):
+        async def wrapper(*args, **kwargs):
             cls.call_count += 1
-            ret = fn(*args, **kwargs)
+            ret = await fn(*args, **kwargs)
             cls.call_count -= 1
             return ret
     
         return wrapper
 
     @classmethod
-    def print(cls, pkg, text, **kwargs):
-        indent = '..' * (cls.call_count - 1)
+    def print(cls, pkg, level, text, **kwargs):
+        indent = '..' * level
         fmt_text = f'[{pkg}] {text}'
         fmt_text = textwrap.indent(text=fmt_text, prefix=indent)
         print(fmt_text, **kwargs)
 
     
     @classmethod
-    def get_print_fn(cls, pkg):
-        return functools.partial(cls.print, pkg)
+    def get_print_fn(cls, pkg, level):
+        return functools.partial(cls.print, pkg, level)
