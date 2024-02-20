@@ -72,6 +72,11 @@ class ConfigParser:
         logger.info(f'waiting for ssh connection to {self.machine}')
         conn = await asyncssh.connect(host=host, username=user, request_pty='force')
         logger.info(f'created ssh connection to {self.machine}')
+
+        # copy needed files to remote
+        await remote.putfile(conn, os.path.dirname(__file__) + "/resources/concert_launcher_wrapper.bash", '/tmp')
+        await remote.putfile(conn, os.path.dirname(__file__) + "/resources/concert_launcher_print_ps_tree.py", '/tmp')
+
         return conn
 
 
@@ -113,11 +118,6 @@ async def execute_process(process, cfg, level=0):
 
     # shorthand
     ssh = e.ssh
-
-    # copy needed files to remote
-    await remote.putfile(ssh, os.path.dirname(__file__) + "/concert_launcher_wrapper.bash", '/tmp')
-
-    logging.info('copied resources OK')
 
     # non-persistent are just one shot commands
     if not e.persistent:
@@ -291,11 +291,6 @@ async def status(process, cfg, level=0):
         await e.connect()
 
         ssh = e.ssh
-
-        # copy required files to remote
-        await remote.putfile(ssh, 
-                             os.path.dirname(__file__) + "/print_ps_tree.py", 
-                             '/tmp/concert_launcher_print_ps_tree.py')
 
         # get list of running windows
         lsdict = await remote.tmux_ls(ssh, e.session)
