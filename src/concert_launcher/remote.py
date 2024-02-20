@@ -16,10 +16,9 @@ async def putfile(remote: asyncssh.SSHClientConnection,
     if remote is None:
         shutil.copy(local_path, remote_path)
     else:
-        try:
-            await asyncssh.scp(srcpaths=local_path, dstpath=(remote, remote_path))
-        except BaseException as e:
-            pass  # tbd fix this
+        await run_cmd(None, f'scp {local_path} {remote._username}@{remote._host}:{remote_path}', 
+                      interactive=False, throw_on_failure=True)
+
 
 async def run_cmd(remote: asyncssh.SSHClientConnection, 
                   cmd: str, 

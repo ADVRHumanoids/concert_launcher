@@ -7,8 +7,8 @@ def get_process_info(pid, complete=False):
         process = psutil.Process(pid)
         ppid = process.ppid()
         cmdline = process.cmdline()
-        
-        if not complete or '/tmp/concert_launcher_wrapper.bash' in cmdline or cmdline[0] == 'tee':
+        cmdline[0] = os.path.basename(cmdline[0])
+        if not complete or '/tmp/concert_launcher_wrapper.bash' in cmdline or cmdline[0] == 'script':
             return ppid, cmdline, 0, 0
         cpu_usage = process.cpu_percent(.11)
         ram_usage = process.memory_info().rss / (1024 * 1024)  # Convert to MB
@@ -18,13 +18,13 @@ def get_process_info(pid, complete=False):
 
 def process_tree_info(pid, level=0):
 
-    min_level = 0
+    min_level = 3
 
     info = get_process_info(pid, level >= min_level)
     
     if info is not None:
         ppid, cmdline, cpu_usage, ram_usage = info
-        if level >= min_level and '/tmp/concert_launcher_wrapper.bash' not in cmdline and cmdline[0] != 'tee':
+        if level >= min_level:
             print(f"{' ' * ((level-min_level) * 2)}PID: {pid} ({' '.join(cmdline[:2])} ...)  CPU: {cpu_usage}  RAM: {ram_usage:.2f} MB")
 
         for child in psutil.Process(pid).children():

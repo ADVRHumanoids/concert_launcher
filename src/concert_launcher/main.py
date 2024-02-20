@@ -23,8 +23,10 @@ async def do_main():
     parser = argparse.ArgumentParser(description='A minimal YAML and TMUX based process launcher')
 
     command = parser.add_subparsers(dest='command')
-    command.required = True
 
+    command.required = True
+    
+    # run
     run = command.add_parser('run', help='run the specified process and its dependencies')
     
     run.add_argument('process', help='process name to run')
@@ -37,6 +39,7 @@ async def do_main():
                         choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
                         help='set the logging level')
 
+    # kill
     kill = command.add_parser('kill', help='kill the specified process and its dependant packages')
 
     kill.add_argument('process', nargs='?', default=None, help='process name to run')
@@ -49,6 +52,7 @@ async def do_main():
                         choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
                         help='set the logging level')
 
+    # status
     status = command.add_parser('status', help='show status information for all processes')
 
     status.add_argument('--config', '-c', default='./launcher.yaml', type=str, help='path config file')

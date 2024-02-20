@@ -37,6 +37,9 @@ class ConfigParser:
             self.machine = None
         
         self.cmd = pfield['cmd']
+
+        # escape bash special chars
+        self.cmd = self.cmd.replace('$', '\\$')
         
         self.ready_check = pfield.get('ready_check', None)
         
