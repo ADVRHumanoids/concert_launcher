@@ -26,3 +26,26 @@ cartesio:
   depends:
    - homing
   ready_check: ros1; timeout 3 rostopic echo -n 1 /cartesian/solution
+
+
+cose:
+  cmd: watch ls 
+  session: cazzi
+
+come:
+  cmd: watch ls 
+  session: cazzi
+
+code:
+  cmd: ros1; rviz
+  # session: cazzi
+  depends:
+   - roscore
+
+tutti:
+  cmd: echo tutti 
+  persistent: false
+  depends:
+    - cose 
+    - code 
+    - come
