@@ -1,0 +1,1 @@
+eval "$(register-python-argcomplete concert_launcher)"
