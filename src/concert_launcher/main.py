@@ -20,7 +20,11 @@ from concert_launcher import monitoring_session
 async def do_main():
 
     # try to parse default config to provide process choices
-    dfl_config_path = os.environ.get('CONCERT_LAUNCHER_DEFAULT_CONFIG', './launcher.yaml')
+    # note: a local file named launcher.yaml has precendence over the env variable
+    if os.path.exists('./launcher.yaml'):
+        dfl_config_path = './launcher.yaml'
+    else:
+        dfl_config_path = os.environ.get('CONCERT_LAUNCHER_DEFAULT_CONFIG', None)
     
     process_choices = None
     

@@ -20,28 +20,56 @@ lock = asyncio.Lock()
 
 async def create_monitoring_session(process: str, cfg: Dict, level=0):
 
-    if process is None:
+    session_names = set()
+
+    if level == 0:
+        
         for pname, pfield in cfg.items():
-            if pname == 'context':
-                continue
-            await create_monitoring_session(pname, cfg, 0)
+            if 'session' in pfield.keys():
+                session_names.add(pfield['session'])
+
+        logging.info('found session names: %s' % session_names)
+
+        for s in session_names:
+
+            global num_cols 
+            global pane_to_split 
+            global num_rows 
+            global num_panes 
+
+            num_cols = 3
+            pane_to_split = 0
+            num_rows = 1
+            num_panes = 0
+
+            logging.info('processing session %s' % s)
+
+            for pname, pfield in cfg.items():
+
+                if pname == 'context':
+                    continue
+                
+                ps = pfield.get('session', cfg['context']['session'])
+                
+                if ps != s:
+                    continue
+
+                logging.info('processing process %s' % pname)
+
+                await create_monitoring_session(pname, cfg, level=1)
+
         return
 
     e = ConfigParser(process, cfg, level)
 
     await e.connect()
 
-    # process deps
-    for dep in e.deps:
-        logging.info(f'{process} depends on {dep}')
-        await create_monitoring_session(dep, cfg, level+1)
-
     # do process
     async with lock:
-        await _create_monitoring_session_non_reentrant(e, process, level)
+        await _create_monitoring_session_non_reentrant(e, process, level, cfg['context']['session'] + '_mon')
 
 
-async def _create_monitoring_session_non_reentrant(e: ConfigParser, process: str, level):
+async def _create_monitoring_session_non_reentrant(e: ConfigParser, process: str, level, tmux_session):
 
     # dont repeat twice
     if process in pkg_already_processed:
@@ -67,42 +95,35 @@ async def _create_monitoring_session_non_reentrant(e: ConfigParser, process: str
 
     print(f'adding session {process} to monitor')
 
-    tmux_session = f'{e.session}_mon'
-
     if num_panes == 0:  
     
-        # kill and re-create monitor session
-        await remote.run_cmd(ssh,
-                   f'tmux kill-session -t {tmux_session}',
-                   interactive=False,
-                   throw_on_failure=False)
-        
-        await remote.run_cmd(ssh, 
-                       f'tmux new-session -d -s {tmux_session} "{cmd}"',
-                       interactive=False,
-                       throw_on_failure=True)
+        ret, _, _ = await remote.run_cmd(ssh,
+                        f'tmux has-session -t {tmux_session}',
+                        throw_on_failure=False)
+        if ret != 0:
+            # kill and re-create monitor session
+            await remote.run_cmd(ssh, 
+                        f'tmux kill-session -t {tmux_session} || tmux new-session -d -s {tmux_session} -n {e.session} "{cmd}"')
+            
+            await remote.run_cmd(ssh, 
+                                 f'tmux set -t {tmux_session} status-style bg=magenta')
+
+        else:
+            await remote.run_cmd(ssh, 
+                        f'tmux kill-window -t {tmux_session}:{e.session}; tmux new-window -d -t {tmux_session} -n {e.session} "{cmd}"',
+                        throw_on_failure=False)
         
         num_panes = 1
         
         await remote.run_cmd(ssh, 
-                f"tmux set -t {tmux_session} mouse on",
-                interactive=False,
-                throw_on_failure=True)   
+                f"tmux set -t {tmux_session} mouse on")   
+        
         
         await remote.run_cmd(ssh, 
-                f"tmux set -t {tmux_session} status off",
-                interactive=False,
-                throw_on_failure=True)   
+                f"tmux set -t {tmux_session} aggressive-resize on")   
         
         await remote.run_cmd(ssh, 
-                f"tmux set -t {tmux_session} aggressive-resize on",
-                interactive=False,
-                throw_on_failure=True)   
-        
-        await remote.run_cmd(ssh, 
-                f"tmux set -t {tmux_session} remain-on-exit on",
-                interactive=False,
-                throw_on_failure=True)
+                f"tmux set -t {tmux_session} remain-on-exit on")
         
         print(f'moniting session created (tmux a -t {tmux_session})')
         
@@ -116,7 +137,7 @@ async def _create_monitoring_session_non_reentrant(e: ConfigParser, process: str
     split_type = '-h' if num_rows == 1 else '-v'
         
     await remote.run_cmd(ssh,
-                   f'tmux split-window {split_type} -t {tmux_session}:0.{pane_to_split} "{cmd}"',
+                   f'tmux split-window {split_type} -t {tmux_session}:{e.session}.{pane_to_split} "{cmd}"',
                    interactive=False,
                    throw_on_failure=False)
     
@@ -131,7 +152,7 @@ async def _create_monitoring_session_non_reentrant(e: ConfigParser, process: str
     # redraw layout
     layout = 'even-horizontal' if num_rows == 1 else 'tiled'
     await remote.run_cmd(ssh,
-                   f'tmux select-layout -t {tmux_session}:0 {layout}',
+                   f'tmux select-layout -t {tmux_session}:{e.session} {layout}',
                    interactive=False,
                    throw_on_failure=False)
     
