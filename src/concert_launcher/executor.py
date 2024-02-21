@@ -21,7 +21,7 @@ completed_proc_cond = asyncio.Condition()
 
 
 class ConfigParser:
-
+    
     def __init__(self, process, cfg, level) -> None:
         
         self.print = print_utils.ProgressReporter.get_print_fn(process, level)
@@ -44,7 +44,7 @@ class ConfigParser:
         self.ready_check = pfield.get('ready_check', None)
         
         self.persistent = pfield.get('persistent', True)
-        
+                
         self.session = pfield.get('session', cfg['context']['session'])
         
         self.deps = pfield.get('depends', [])
@@ -72,15 +72,38 @@ class ConfigParser:
         logger.info(f'waiting for ssh connection to {self.machine}')
         conn = await asyncssh.connect(host=host, username=user, request_pty='force')
         logger.info(f'created ssh connection to {self.machine}')
+        
+        resource_files = [
+            "concert_launcher_wrapper.bash",
+            "concert_launcher_print_ps_tree.py"
+        ]
+        
+        has_resource_files = True 
+        
+        for rf in resource_files:
+            logging.info(f'looking up /tmp/{rf} in {user}@{host}')
+            ret, _, _, = await remote.run_cmd(conn, f'ls /tmp/{rf}', throw_on_failure=False)
+            if ret != 0:
+                logging.info(f'looking up /tmp/{rf} in {user}@{host} -> NOT FOUND')
+                has_resource_files = False 
+                break
 
         # copy needed files to remote
-        await remote.putfile(conn, os.path.dirname(__file__) + "/resources/concert_launcher_wrapper.bash", '/tmp')
-        await remote.putfile(conn, os.path.dirname(__file__) + "/resources/concert_launcher_print_ps_tree.py", '/tmp')
+        if not has_resource_files:
+            logging.info('uploading resources')
+            await remote.putfile(conn, os.path.dirname(__file__) + "/resources/concert_launcher_wrapper.bash", '/tmp')
+            await remote.putfile(conn, os.path.dirname(__file__) + "/resources/concert_launcher_print_ps_tree.py", '/tmp')
+            logging.info('uploading resources DONE')
 
         return conn
 
 
 async def execute_process(process, cfg, level=0):
+    
+    async def notify_all():
+        async with completed_proc_cond:
+            completed_proc.add(process)
+            completed_proc_cond.notify_all()
     
     # await for process completion if pending
     if process in pending_proc:
@@ -102,7 +125,7 @@ async def execute_process(process, cfg, level=0):
     e = ConfigParser(process=process, cfg=cfg, level=level)
 
     # connect ssh
-    await e.connect()
+    await e.connect()    
 
     # process dependencies
     dep_coro_list = []
@@ -122,13 +145,17 @@ async def execute_process(process, cfg, level=0):
     # non-persistent are just one shot commands
     if not e.persistent:
         e.print(f'running command')
-        exitcode, stdout, stderr = await remote.run_cmd(ssh, e.cmd)
+        exitcode, stdout, stderr = await remote.run_cmd(ssh, e.cmd, 
+                                                        interactive=True, 
+                                                        throw_on_failure=False)
         for l in stdout.split('\n'):
             e.print(f'[stdout] {l}')
         if exitcode != 0:
             e.print(f'failed (exit code {exitcode})')
         else:
             e.print(f'success')
+        
+        await notify_all()
         return
         
     # check already running
@@ -137,12 +164,12 @@ async def execute_process(process, cfg, level=0):
     if session_exists:
         e.print(f'exists')
     else:
-        e.print(f'running process')
+        e.print(f'running process..')
         await remote.tmux_spawn_new_session(ssh, e.session, process, e.cmd)
+        e.print('..done')
 
     # ready check
     if e.ready_check is not None:
-
 
         while True:
             
@@ -150,7 +177,7 @@ async def execute_process(process, cfg, level=0):
 
             e.print('checking for readiness')
 
-            retcode, _, _ = await remote.run_cmd(ssh, e.ready_check)
+            retcode, _, _ = await remote.run_cmd(ssh, e.ready_check, interactive=True, throw_on_failure=False)
 
             if not await remote.tmux_session_alive(ssh, e.session, process):
                 raise RuntimeError(f'process {e.session}:{process} no longer exists')
@@ -165,9 +192,7 @@ async def execute_process(process, cfg, level=0):
 
 
     e.print(f'ready')
-    async with completed_proc_cond:
-        completed_proc.add(process)
-        completed_proc_cond.notify_all()
+    await notify_all()
 
 
 async def kill(process, cfg, level=0):
@@ -204,6 +229,7 @@ async def kill(process, cfg, level=0):
 
         return
     
+    logger.info(f'kill {process}')
 
     # add to pending
     pending_proc.add(process)
@@ -222,16 +248,17 @@ async def kill(process, cfg, level=0):
     proc_coro_list = []
 
     for pname, pfield in cfg.items():
-
+        
         if pname == process or pname == 'context':
             continue
         
         try:
             deps = pfield['depends']
         except:
+            logger.info(f'{pname} has no dependencies')
             continue
 
-        if process in deps:
+        if process in deps and pfield.get('persistent', True):
             
             e.print(f'found dependant process {pname}')
             proc_coro_list.append(kill(pname, cfg, level+1))
@@ -239,9 +266,20 @@ async def kill(process, cfg, level=0):
     # wait until all killed
     if len(proc_coro_list) > 0:
         await asyncio.gather(*proc_coro_list)
+        proc_coro_list.clear()
 
-    # non-persistent are just one shot commands
+    # non-persistent are just one shot commands,
+    # we use them as process groups and kill dependencies
     if not e.persistent:
+        
+        for dep in e.deps:
+            proc_coro_list.append(kill(dep, cfg, level+1))
+        
+        # wait until all killed
+        if len(proc_coro_list) > 0:
+            await asyncio.gather(*proc_coro_list)
+            proc_coro_list.clear()
+            
         return await notify_completed() 
 
     # get list of running windows
@@ -281,6 +319,8 @@ async def kill(process, cfg, level=0):
 
             
 async def status(process, cfg, level=0):
+    
+    tasks = []
 
     for process, pfield in cfg.items():
 
@@ -288,6 +328,7 @@ async def status(process, cfg, level=0):
             continue
 
         e = ConfigParser(process=process, cfg=cfg, level=0)
+        
         await e.connect()
 
         ssh = e.ssh
@@ -304,15 +345,30 @@ async def status(process, cfg, level=0):
                 e.print('dead')
                 continue
             
-            # print process tree
-            retcode, stdout, _ = await remote.run_cmd(ssh,
-                           f'python3 /tmp/concert_launcher_print_ps_tree.py {pinfo["pid"]}',
-                           interactive=False,
-                           throw_on_failure=True)
+            logging.info(f'adding task for process {process}')
             
-            e.print('process tree: ')
-            print('  ', stdout.replace('\n', '\n  '))
+            tasks.append(_status(e, pinfo['pid']))
 
         except:
             pass
+        
+    logging.info('awaiting results')
+        
+    res = await asyncio.gather(*tasks)
     
+    for r in res:
+        r()
+    
+    
+async def _status(e: ConfigParser, pid):
+        
+    # get process tree
+    retcode, stdout, _ = await remote.run_cmd(
+                    e.ssh,
+                    f'python3 /tmp/concert_launcher_print_ps_tree.py {pid}')
+    
+    def printer():
+        e.print('process tree: ')
+        print('  ', stdout.replace('\n', '\n  '))
+    
+    return printer

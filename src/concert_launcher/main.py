@@ -19,6 +19,18 @@ from concert_launcher import monitoring_session
 
 async def do_main():
 
+    # try to parse default config to provide process choices
+    dfl_config_path = os.environ.get('CONCERT_LAUNCHER_DEFAULT_CONFIG', './launcher.yaml')
+    
+    process_choices = None
+    
+    try:
+        dfl_config = yaml.safe_load(open(dfl_config_path, 'r'))
+        process_choices = [pname for pname in dfl_config.keys() if pname != 'context']
+    except:
+        pass
+        
+
     # cmd line args
     parser = argparse.ArgumentParser(description='A minimal YAML and TMUX based process launcher')
 
@@ -29,9 +41,9 @@ async def do_main():
     # run
     run = command.add_parser('run', help='run the specified process and its dependencies')
     
-    run.add_argument('process', help='process name to run')
+    run.add_argument('process', choices=process_choices, help='process name to run')
 
-    run.add_argument('--config', '-c', default='./launcher.yaml', type=str, help='path config file')
+    run.add_argument('--config', '-c', default=dfl_config_path, type=str, help='path config file')
 
     run.add_argument('--monitor', '-m', action='store_true', help='spawn a local tmux monitoring session')
 
@@ -42,11 +54,11 @@ async def do_main():
     # kill
     kill = command.add_parser('kill', help='kill the specified process and its dependant packages')
 
-    kill.add_argument('process', nargs='?', default=None, help='process name to run')
+    kill.add_argument('process', choices=process_choices, nargs='?', default=None, help='process name to run')
 
     kill.add_argument('--all', '-a', action='store_true', help='kill all processes')
 
-    kill.add_argument('--config', '-c', default='./launcher.yaml', type=str, help='path config file')
+    kill.add_argument('--config', '-c', default=dfl_config_path, type=str, help='path config file')
 
     kill.add_argument('--log-level', '-l', dest='log_level', default='WARNING', 
                         choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
@@ -55,7 +67,7 @@ async def do_main():
     # status
     status = command.add_parser('status', help='show status information for all processes')
 
-    status.add_argument('--config', '-c', default='./launcher.yaml', type=str, help='path config file')
+    status.add_argument('--config', '-c', default=dfl_config_path, type=str, help='path config file')
 
     status.add_argument('--log-level', '-l', dest='log_level', default='WARNING', 
                         choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
@@ -65,12 +77,13 @@ async def do_main():
 
     mon.add_argument('--replace', '-r', action='store_true', help='run monitoring session in current shell')
 
-    mon.add_argument('--config', '-c', default='./launcher.yaml', type=str, help='path config file')
+    mon.add_argument('--config', '-c', default=dfl_config_path, type=str, help='path config file')
 
     mon.add_argument('--log-level', '-l', dest='log_level', default='WARNING', 
                         choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
                         help='set the logging level')
     
+    argcomplete.autocomplete(parser)
     args = parser.parse_args()
 
     # convert log level string to corresponding numeric value
@@ -114,6 +127,8 @@ async def do_main():
     if args.command == 'kill':
 
         proc_to_kill = None if args.all else args.process
+        
+        logger.info(f'will kill proc {proc_to_kill}')
 
         await executor.kill(process=proc_to_kill, cfg=cfg)
 
