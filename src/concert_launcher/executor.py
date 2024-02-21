@@ -58,11 +58,13 @@ class ConfigParser:
             if self.machine is not None and self.machine not in connection_map.keys():
                 self.print(f'opening ssh connection to remote {self.machine}')
                 self.ssh = await self._connect()
+                await self._upload_resources()
                 connection_map[self.machine] = self.ssh 
             elif self.machine is not None:
                 self.ssh = connection_map[self.machine]
             else:
                 self.ssh = None 
+                await self._upload_resources()
 
 
     async def _connect(self):
@@ -72,6 +74,16 @@ class ConfigParser:
         logger.info(f'waiting for ssh connection to {self.machine}')
         conn = await asyncssh.connect(host=host, username=user, request_pty='force')
         logger.info(f'created ssh connection to {self.machine}')
+
+        return conn 
+    
+
+    async def _upload_resources(self):
+
+        if self.machine is None:
+            user, host = 'local_user', 'local_host'
+        else:
+            user, host = self.machine.split('@')
         
         resource_files = [
             "concert_launcher_wrapper.bash",
@@ -82,7 +94,7 @@ class ConfigParser:
         
         for rf in resource_files:
             logging.info(f'looking up /tmp/{rf} in {user}@{host}')
-            ret, _, _, = await remote.run_cmd(conn, f'ls /tmp/{rf}', throw_on_failure=False)
+            ret, _, _, = await remote.run_cmd(self.ssh, f'ls /tmp/{rf}', throw_on_failure=False)
             if ret != 0:
                 logging.info(f'looking up /tmp/{rf} in {user}@{host} -> NOT FOUND')
                 has_resource_files = False 
@@ -91,11 +103,10 @@ class ConfigParser:
         # copy needed files to remote
         if not has_resource_files:
             logging.info('uploading resources')
-            await remote.putfile(conn, os.path.dirname(__file__) + "/resources/concert_launcher_wrapper.bash", '/tmp')
-            await remote.putfile(conn, os.path.dirname(__file__) + "/resources/concert_launcher_print_ps_tree.py", '/tmp')
+            await remote.putfile(self.ssh, os.path.dirname(__file__) + "/resources/concert_launcher_wrapper.bash", '/tmp')
+            await remote.putfile(self.ssh, os.path.dirname(__file__) + "/resources/concert_launcher_print_ps_tree.py", '/tmp')
             logging.info('uploading resources DONE')
 
-        return conn
 
 
 async def execute_process(process, cfg, level=0):
@@ -186,7 +197,7 @@ async def execute_process(process, cfg, level=0):
                 logger.info(f'ready check for process {process} returned 0')
                 break
 
-            to_sleep = 1.0 - (time.time() - t0)  # at least 1 sec
+            to_sleep = 0.666 - (time.time() - t0)  # at least 1 sec
             
             await asyncio.sleep(to_sleep)
 
@@ -277,6 +288,7 @@ async def kill(process, cfg, level=0):
         
         # wait until all killed
         if len(proc_coro_list) > 0:
+            e.print('killing dependencies')
             await asyncio.gather(*proc_coro_list)
             proc_coro_list.clear()
             
