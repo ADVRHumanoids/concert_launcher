@@ -48,11 +48,11 @@ async def run_cmd(remote: asyncssh.SSHClientConnection,
         stdout = res.stdout
         stderr = res.stderr
 
-    logger.info(f'{cmd} exitcode: {retcode}')
+    logger.debug(f'{cmd} exitcode: {retcode}')
 
-    logger.info(f'{cmd} stdout: {stdout}')
+    logger.debug(f'{cmd} stdout: {stdout}')
 
-    logger.info(f'{cmd} stderr: {stderr}')
+    logger.debug(f'{cmd} stderr: {stderr}')
 
     if throw_on_failure and retcode != 0:
         raise RuntimeError(f'command {cmd} returned {retcode}')
@@ -63,7 +63,7 @@ async def run_cmd(remote: asyncssh.SSHClientConnection,
 
 async def tmux_ls(remote: Connection, session: str):
     
-    list_w_cmd = "tmux list-w -t %s -F '#{session_name} #{window_name} #{pane_pid} #{pane_dead}'" % session
+    list_w_cmd = "tmux list-w -t %s -F '#{session_name} #{window_name} #{pane_pid} #{pane_dead} #{pane_dead_status}'" % session
     
     retcode, stdout, _ = await run_cmd(remote, list_w_cmd, throw_on_failure=False)
     
@@ -78,12 +78,20 @@ async def tmux_ls(remote: Connection, session: str):
     ret = dict()
 
     for l in stdout.split('\n'):
-        sname, wname, pid, dead = l.split(' ')
+        
+        tokens = l.strip().split(' ')
+
+        if len(tokens) == 4:
+            tokens.append(0)
+        
+        sname, wname, pid, dead, dead_status = tokens
+        
         if sname != session:
             continue
         ret[wname] = {
             'pid': int(pid),
-            'dead': int(dead) == 1
+            'dead': int(dead) == 1,
+            'exitstatus': int(dead_status),
         }
 
     logger.info(f'tmux ls returns: {ret}')
@@ -121,9 +129,9 @@ tmux_spawn_new_session_lock = asyncio.Lock()
 async def tmux_spawn_new_session(remote: Connection, session: str, window: str, cmd: str):
 
     async with tmux_spawn_new_session_lock:
-        logger.info(f'>>>>>>>>>>> BEGIN _tmux_spawn_new_session {session}:{window}')
+        logger.debug(f'>>>>>>>>>>> BEGIN _tmux_spawn_new_session {session}:{window}')
         ret = await _tmux_spawn_new_session(remote, session, window, cmd)
-        logger.info(f'<<<<<<<<<<< END   _tmux_spawn_new_session {session}:{window}')
+        logger.debug(f'<<<<<<<<<<< END   _tmux_spawn_new_session {session}:{window}')
         return ret
 
 

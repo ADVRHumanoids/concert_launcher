@@ -11,6 +11,10 @@ export PYTHONUNBUFFERED=1
 
 script --append --flush --return --command "bash -ic \"$CMD\"" $STDOUT_FILE
 
-echo "process exited with code $?" >> $STDOUT_FILE
+RET=$?
+
+echo "process exited with code $RET" >> $STDOUT_FILE
 
 sleep 1
+
+exit $RET

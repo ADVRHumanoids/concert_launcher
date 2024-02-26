@@ -71,6 +71,8 @@ async def do_main():
     # status
     status = command.add_parser('status', help='show status information for all processes')
 
+    status.add_argument('--watch', '-w', action='store_true', help='watch status every 1 second')
+
     status.add_argument('--config', '-c', default=dfl_config_path, type=str, help='path config file')
 
     status.add_argument('--log-level', '-l', dest='log_level', default='WARNING', 
@@ -138,7 +140,18 @@ async def do_main():
 
     if args.command == 'status':
 
-        await executor.status(None, cfg=cfg)
+        if args.watch:
+
+            while True:
+                t0 = time.time()
+                print('\n')
+                await executor.status(None, cfg=cfg)
+                await asyncio.sleep(0.666 - (time.time() - t0))
+
+        else:
+            
+            ret = await executor.status(None, cfg=cfg)
+            print(ret)
 
     if args.command == 'mon':
 

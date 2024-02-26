@@ -19,6 +19,12 @@ pending_proc = set()
 completed_proc = set()
 completed_proc_cond = asyncio.Condition()
 
+# complete fn
+async def notify_completed(process):
+    async with completed_proc_cond:
+        completed_proc.add(process)
+        completed_proc_cond.notify_all()
+
 
 class ConfigParser:
     
@@ -110,11 +116,11 @@ class ConfigParser:
 
 
 async def execute_process(process, cfg, level=0):
-    
-    async def notify_all():
-        async with completed_proc_cond:
-            completed_proc.add(process)
-            completed_proc_cond.notify_all()
+
+    # clear proc cache
+    if level == 0:
+        completed_proc.clear()
+        pending_proc.clear()
     
     # await for process completion if pending
     if process in pending_proc:
@@ -166,7 +172,7 @@ async def execute_process(process, cfg, level=0):
         else:
             e.print(f'success')
         
-        await notify_all()
+        await notify_completed(process=process)
         return
         
     # check already running
@@ -203,10 +209,15 @@ async def execute_process(process, cfg, level=0):
 
 
     e.print(f'ready')
-    await notify_all()
+    await notify_completed(process=process)
 
 
 async def kill(process, cfg, level=0):
+
+    # clear proc cache
+    if level == 0:
+        completed_proc.clear()
+        pending_proc.clear()
 
     # if process is none, kill all
     if process is None:
@@ -222,7 +233,7 @@ async def kill(process, cfg, level=0):
             if process == 'context':
                 continue
             
-            proc_coro_list.append(kill(process, cfg))
+            proc_coro_list.append(kill(process, cfg, level=level+1))
 
         return await asyncio.gather(*proc_coro_list)
     
@@ -244,12 +255,6 @@ async def kill(process, cfg, level=0):
 
     # add to pending
     pending_proc.add(process)
-
-    # complete fn
-    async def notify_completed():
-        async with completed_proc_cond:
-            completed_proc.add(process)
-            completed_proc_cond.notify_all()
 
     # parse config and connect ssh
     e = ConfigParser(process=process, cfg=cfg, level=level)
@@ -292,18 +297,18 @@ async def kill(process, cfg, level=0):
             await asyncio.gather(*proc_coro_list)
             proc_coro_list.clear()
             
-        return await notify_completed() 
+        return await notify_completed(process=process)
 
     # get list of running windows
     lsdict = await remote.tmux_ls(e.ssh, e.session)
 
     if process not in lsdict.keys():
         e.print('not running')
-        return await notify_completed() 
+        return await notify_completed(process=process)
 
     if lsdict[process]['dead']:
         e.print('already dead')
-        return await notify_completed() 
+        return await notify_completed(process=process)
         
     e.print('killing with SIGINT')
 
@@ -327,12 +332,14 @@ async def kill(process, cfg, level=0):
                                  interactive=False,
                                  throw_on_failure=True) 
     e.print('killed')
-    return await notify_completed() 
+    return await notify_completed(process=process)
 
             
 async def status(process, cfg, level=0):
     
     tasks = []
+
+    status_dict = {}
 
     for process, pfield in cfg.items():
 
@@ -348,6 +355,8 @@ async def status(process, cfg, level=0):
         # get list of running windows
         lsdict = await remote.tmux_ls(ssh, e.session)
 
+        status_dict[e.session] = lsdict
+
         try:
             
             # this fails if windows does not exist
@@ -362,6 +371,7 @@ async def status(process, cfg, level=0):
             tasks.append(_status(e, pinfo['pid']))
 
         except:
+
             pass
         
     logging.info('awaiting results')
@@ -370,6 +380,8 @@ async def status(process, cfg, level=0):
     
     for r in res:
         r()
+
+    return status_dict
     
     
 async def _status(e: ConfigParser, pid):
