@@ -124,7 +124,7 @@ class ConfigParser:
                 if vuser not in v.choices:
                     continue
                 if v.cmd[vuser] is not None:
-                    cmd = v.cmd[vuser]
+                    cmd = v.cmd[vuser].replace('{cmd}', cmd)
                 params.update(**v.params[vuser])
 
         # parse params
@@ -437,7 +437,7 @@ async def kill(process, cfg, level=0, graceful=True):
     return True
 
 
-async def status(process, cfg):
+async def status(process, cfg, print_to_stdout=True):
 
     status_dict = {}
 
@@ -458,7 +458,8 @@ async def status(process, cfg):
 
         status_dict[e.session] = lsdict
 
-    print()
+    if print_to_stdout:
+        print()
 
     for s, sdict in status_dict.items():
 
@@ -470,7 +471,8 @@ async def status(process, cfg):
             e = proc_cfg[p]
             machine = 'local' if e.machine is None else e.machine
 
-            print(f'{p :<15}\t{s}\t{machine :<20}\t{status}\t{pid}\t{ret}')
+            if print_to_stdout:
+                print(f'{p :<15}\t{s}\t{machine :<20}\t{status}\t{pid}\t{ret}')
 
     return status_dict
 
