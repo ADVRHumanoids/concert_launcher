@@ -25,35 +25,117 @@ async def notify_completed(process):
         completed_proc.add(process)
         completed_proc_cond.notify_all()
 
+class Variant:
+
+        def __init__(self, name: str, cfg: dict):
+            
+            self.name = name
+            
+            vfield = cfg[name]
+
+            self.choices = []
+
+            self.params = {}
+
+            self.cmd = {}
+
+            if isinstance(vfield, list):
+                for v in vfield:
+                    self.choices.append(list(v.keys())[0])
+                for i, c in enumerate(self.choices):
+                    self.params[c] = vfield[i][c].get('params', {})
+                    self.cmd[c] = vfield[i][c].get('cmd', None)
+            else:
+                self.choices = [name]
+                self.params[name] = vfield.get('params', {})
+                self.cmd[name] = vfield.get('cmd', None)
+                        
+            logger.debug(f'variant with name {name}')
+            logger.debug(f'        with choices {self.choices}')
+            logger.debug(f'        with params {self.params}')
+            logger.debug(f'        with cmd {self.cmd}')
+
 
 class ConfigParser:
     
     def __init__(self, process, cfg, level) -> None:
+
+        # master cfg
+        self.cfg = cfg
         
+        # print with intentation to reflect dependency tree
         self.print = print_utils.ProgressReporter.get_print_fn(process, level)
         
+        # not used atm
         self.verbose = config.ConfigOptions.verbose
         
         # parse config
         pfield = cfg[process]
+        self.pfield = pfield
+
+        # cmd needs calling parse_cmd()
+        self.cmd = None 
         
+        # parse remote machine (none = local machine)
         self.machine = pfield.get('machine', None)
 
         if self.machine == 'local':
             self.machine = None
         
-        self.cmd = pfield['cmd']
+        # cmd that returns 0 if proc is ready
+        self.ready_check = pfield.get('ready_check', None)
+        
+        # not persistent means one shot command (does not stay alive)
+        self.persistent = pfield.get('persistent', True)
+        
+        # session name for this proc (used to group procs into tmux sessions)
+        self.session = pfield.get('session', cfg['context']['session'])
+        
+        # list of dependencies
+        self.deps = pfield.get('depends', [])
+
+        # parse variants
+        self.variants = []
+        
+        if 'variants' in pfield.keys():
+            for v in pfield['variants'].keys():
+                var = Variant(v, pfield['variants'])
+                self.variants.append(var)
+
+        # save name
+        self.name = process
+
+        #
+
+    
+    def parse_cmd(self, user_params, user_variants):
+
+        # start with global params + user params
+        params = self.cfg['context'].get('params', {})
+        params = dict(params)
+        params.update(**user_params)
+            
+        # parse variants to update cmd and params
+        cmd = self.pfield['cmd']
+
+        for v in self.variants:
+            v : Variant = v
+            for vuser in user_variants:
+                if vuser not in v.choices:
+                    continue
+                if v.cmd[vuser] is not None:
+                    cmd = v.cmd[vuser]
+                params.update(**v.params[vuser])
+
+        # parse params
+        try:
+            self.cmd = cmd.format(**params)
+        except KeyError as e:
+            logger.error(f'{e}: specify missing params inside cfg.context.params or with --params key:=value')
+            raise e
 
         # escape bash special chars
         self.cmd = self.cmd.replace('$', '\\$')
-        
-        self.ready_check = pfield.get('ready_check', None)
-        
-        self.persistent = pfield.get('persistent', True)
-                
-        self.session = pfield.get('session', cfg['context']['session'])
-        
-        self.deps = pfield.get('depends', [])
 
 
     async def connect(self):
@@ -115,7 +197,7 @@ class ConfigParser:
 
 
 
-async def execute_process(process, cfg, level=0):
+async def execute_process(process, cfg, params={}, variants=[], level=0):
 
     # clear proc cache
     if level == 0:
@@ -149,7 +231,7 @@ async def execute_process(process, cfg, level=0):
 
     for dep in e.deps:
         e.print(f'depends on {dep}')
-        dep_coro_list.append(execute_process(dep, cfg, level+1))
+        dep_coro_list.append(execute_process(dep, cfg, params, variants, level+1))
 
     if len(dep_coro_list) > 0:
         logger.info('waiting for dependencies..')
@@ -161,7 +243,13 @@ async def execute_process(process, cfg, level=0):
 
     # non-persistent are just one shot commands
     if not e.persistent:
+    
         e.print(f'running command')
+        
+        # parse cmdline
+        e.parse_cmd(params, variants)
+        
+        # run
         exitcode, stdout, stderr = await remote.run_cmd(ssh, e.cmd, 
                                                         interactive=True, 
                                                         throw_on_failure=False)
@@ -173,7 +261,7 @@ async def execute_process(process, cfg, level=0):
             e.print(f'success')
         
         await notify_completed(process=process)
-        return
+        return exitcode == 0
         
     # check already running
     session_exists = await remote.tmux_session_alive(ssh, e.session, process)
@@ -182,6 +270,11 @@ async def execute_process(process, cfg, level=0):
         e.print(f'exists')
     else:
         e.print(f'running process..')
+    
+        # parse cmdline
+        e.parse_cmd(params, variants)
+            
+        # run
         await remote.tmux_spawn_new_session(ssh, e.session, process, e.cmd)
         e.print('..done')
 
@@ -210,9 +303,10 @@ async def execute_process(process, cfg, level=0):
 
     e.print(f'ready')
     await notify_completed(process=process)
+    return True
 
 
-async def kill(process, cfg, level=0):
+async def kill(process, cfg, level=0, graceful=True):
 
     # clear proc cache
     if level == 0:
@@ -233,9 +327,10 @@ async def kill(process, cfg, level=0):
             if process == 'context':
                 continue
             
-            proc_coro_list.append(kill(process, cfg, level=level+1))
+            proc_coro_list.append(kill(process, cfg, level=level+1, graceful=graceful))
 
-        return await asyncio.gather(*proc_coro_list)
+        await asyncio.gather(*proc_coro_list)
+        return True
     
 
     # await for process completion if pending
@@ -249,7 +344,7 @@ async def kill(process, cfg, level=0):
         async with completed_proc_cond:
             await completed_proc_cond.wait_for(is_completed)
 
-        return
+        return True
     
     logger.info(f'kill {process}')
 
@@ -277,7 +372,7 @@ async def kill(process, cfg, level=0):
         if process in deps and pfield.get('persistent', True):
             
             e.print(f'found dependant process {pname}')
-            proc_coro_list.append(kill(pname, cfg, level+1))
+            proc_coro_list.append(kill(pname, cfg, level+1, graceful=graceful))
 
     # wait until all killed
     if len(proc_coro_list) > 0:
@@ -297,25 +392,31 @@ async def kill(process, cfg, level=0):
             await asyncio.gather(*proc_coro_list)
             proc_coro_list.clear()
             
-        return await notify_completed(process=process)
+        await notify_completed(process=process)
+        return True
 
     # get list of running windows
     lsdict = await remote.tmux_ls(e.ssh, e.session)
 
     if process not in lsdict.keys():
         e.print('not running')
-        return await notify_completed(process=process)
+        await notify_completed(process=process)
+        return True
 
     if lsdict[process]['dead']:
         e.print('already dead')
-        return await notify_completed(process=process)
+        await notify_completed(process=process)
+        return True
+    
+    signame = 'SIGINT' if graceful else 'SIGKILL'
+    sigkey = 'C-c' if graceful else 'C-\\\ '
         
-    e.print('killing with SIGINT')
+    e.print(f'killing with {signame}')
 
     pid = lsdict[process]['pid']
 
     # send CTRL+C
-    await remote.run_cmd(e.ssh, f'tmux send-keys -t {e.session}:{process} C-c C-m Enter',
+    await remote.run_cmd(e.ssh, f'tmux send-keys -t {e.session}:{process} {sigkey} C-m Enter',
                    interactive=False,
                    throw_on_failure=True) 
     
@@ -332,10 +433,51 @@ async def kill(process, cfg, level=0):
                                  interactive=False,
                                  throw_on_failure=True) 
     e.print('killed')
-    return await notify_completed(process=process)
+    await notify_completed(process=process)
+    return True
+
+
+async def status(process, cfg):
+
+    status_dict = {}
+
+    proc_cfg = {}
+
+    for process, pfield in cfg.items():
+
+        if process == 'context':
+            continue
+
+        e = ConfigParser(process=process, cfg=cfg, level=0)
+
+        proc_cfg[process] = e
+        
+        await e.connect()
+
+        lsdict = await remote.tmux_ls(e.ssh, e.session)
+
+        status_dict[e.session] = lsdict
+
+    print()
+
+    for s, sdict in status_dict.items():
+
+        for p, pdict in sdict.items():
+            
+            status = 'DEAD   ' if pdict['dead'] else 'RUNNING'
+            pid = pdict['pid']
+            ret = pdict['exitstatus']
+            e = proc_cfg[p]
+            machine = 'local' if e.machine is None else e.machine
+
+            print(f'{p :<15}\t{s}\t{machine :<20}\t{status}\t{pid}\t{ret}')
+
+    return status_dict
+
+
 
             
-async def status(process, cfg, level=0):
+async def pstree(process, cfg, level=0):
     
     tasks = []
 
@@ -368,10 +510,9 @@ async def status(process, cfg, level=0):
             
             logging.info(f'adding task for process {process}')
             
-            tasks.append(_status(e, pinfo['pid']))
+            tasks.append(_pstree(e, pinfo['pid']))
 
         except:
-
             pass
         
     logging.info('awaiting results')
@@ -384,10 +525,10 @@ async def status(process, cfg, level=0):
     return status_dict
     
     
-async def _status(e: ConfigParser, pid):
+async def _pstree(e: ConfigParser, pid):
         
     # get process tree
-    retcode, stdout, _ = await remote.run_cmd(
+    _, stdout, _ = await remote.run_cmd(
                     e.ssh,
                     f'python3 /tmp/concert_launcher_print_ps_tree.py {pid}')
     
@@ -396,3 +537,53 @@ async def _status(e: ConfigParser, pid):
         print('  ', stdout.replace('\n', '\n  '))
     
     return printer
+
+
+# class for printing each process stdout
+# with a nice prefix
+class Printer:
+    def __init__(self, process) -> None:
+        self.process = process
+    async def print(self,l):
+        print('[', self.process, ']', l, end='')
+
+        
+def default_get_printer(process):
+    return Printer(process).print
+
+
+# watch proc stdout
+async def watch(process: str, cfg: Dict, printer_coro_factory=default_get_printer):
+
+    # process is none = watch all
+    if process is None:
+
+        tasks = []
+
+        for process, _ in cfg.items():
+
+            if process == 'context':
+                continue
+
+            e = ConfigParser(process=process, cfg=cfg, level=0)
+            
+            await e.connect()
+
+            watch_coro = remote.watch_process(e.ssh, 
+                                              f'touch /tmp/{process}.stdout && tail -f -n +1 /tmp/{process}.stdout', 
+                                              stdout_coro=printer_coro_factory(process))
+
+            tasks.append(watch_coro)
+
+        await asyncio.gather(*tasks)
+
+        return
+
+
+    e = ConfigParser(process, cfg, 0)
+
+    await e.connect()
+
+    await remote.watch_process(e.ssh, 
+                        f'tail -f -n +1 /tmp/{process}.stdout', 
+                        stdout_coro=printer_coro_factory(process))

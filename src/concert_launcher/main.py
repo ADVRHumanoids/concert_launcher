@@ -46,6 +46,10 @@ async def do_main():
     run = command.add_parser('run', help='run the specified process and its dependencies')
     
     run.add_argument('process', choices=process_choices, help='process name to run')
+    
+    run.add_argument('--params', '-p', nargs='+', help='parameters for process execution (key:=value)')
+    
+    run.add_argument('--variants', '-v', nargs='+', help='variants for process execution (procname:=varname)')
 
     run.add_argument('--config', '-c', default=dfl_config_path, type=str, help='path config file')
 
@@ -73,12 +77,15 @@ async def do_main():
 
     status.add_argument('--watch', '-w', action='store_true', help='watch status every 1 second')
 
+    status.add_argument('--pstree', '-t', action='store_true', help='show process tree')
+
     status.add_argument('--config', '-c', default=dfl_config_path, type=str, help='path config file')
 
     status.add_argument('--log-level', '-l', dest='log_level', default='WARNING', 
                         choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
                         help='set the logging level')
     
+    # monitor
     mon = command.add_parser('mon', help='spawn a tmux monitoring session on the local machine')
 
     mon.add_argument('--replace', '-r', action='store_true', help='run monitoring session in current shell')
@@ -86,6 +93,17 @@ async def do_main():
     mon.add_argument('--config', '-c', default=dfl_config_path, type=str, help='path config file')
 
     mon.add_argument('--log-level', '-l', dest='log_level', default='WARNING', 
+                        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
+                        help='set the logging level')
+    
+    # watch
+    watch = command.add_parser('watch', help='watch a process\' output')
+
+    watch.add_argument('process', choices=process_choices, nargs='?', default=None, help='process name to watch')
+
+    watch.add_argument('--config', '-c', default=dfl_config_path, type=str, help='path config file')
+
+    watch.add_argument('--log-level', '-l', dest='log_level', default='WARNING', 
                         choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
                         help='set the logging level')
     
@@ -120,6 +138,28 @@ async def do_main():
 
     if args.command == 'run':
 
+        # fill param dict
+        params = {}
+
+        args_params = args.params if args.params is not None else []
+
+        for p in args_params:
+            key, value = p.split(':=')
+            params[key] = value
+
+        logger.info(f'parameter dict is : {params}')
+
+        # fill variant dict (proc -> variant)
+        # e.g. 
+        # cl run --variant imp verbose
+        variants = []
+
+        args_variants = args.variants if args.variants is not None else []
+
+        variants = variants + args_variants
+
+        logger.info(f'variants list is : {variants}')
+
         # create local viewer
         if args.monitor:
 
@@ -128,7 +168,7 @@ async def do_main():
             spawn_monitor()
 
         # run processes
-        await executor.execute_process(process=args.process, cfg=cfg)
+        await executor.execute_process(process=args.process, cfg=cfg, params=params, variants=variants)
 
     if args.command == 'kill':
 
@@ -145,13 +185,18 @@ async def do_main():
             while True:
                 t0 = time.time()
                 print('\n')
-                await executor.status(None, cfg=cfg)
+                if args.pstree:
+                    await executor.pstree(None, cfg=cfg)
+                else:
+                    await executor.status(None, cfg=cfg)
                 await asyncio.sleep(0.666 - (time.time() - t0))
 
         else:
             
-            ret = await executor.status(None, cfg=cfg)
-            print(ret)
+            if args.pstree:
+                    await executor.pstree(None, cfg=cfg)
+            else:
+                await executor.status(None, cfg=cfg)
 
     if args.command == 'mon':
 
@@ -159,6 +204,10 @@ async def do_main():
         
         spawn_monitor()
 
+    if args.command == 'watch':
+
+        await executor.watch(process=args.process, cfg=cfg)
+        
     
 def main():
 
