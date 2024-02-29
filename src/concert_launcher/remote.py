@@ -1,6 +1,3 @@
-from fabric import Connection
-from invoke.exceptions import CommandTimedOut
-import invoke
 import logging
 import shutil
 from . import config
@@ -60,8 +57,32 @@ async def run_cmd(remote: asyncssh.SSHClientConnection,
     return retcode, stdout.strip(), stderr.strip()
 
 
+async def watch_process(remote: asyncssh.SSHClientConnection, 
+                        cmd: str, 
+                        stdout_coro,
+                        interactive=False, 
+                        throw_on_failure=True):
+    
+    if remote is None: 
+        proc = await asyncio.create_subprocess_shell(cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                stdin=asyncio.subprocess.PIPE)
+        decode = True
+    else:
+        proc = await remote.create_process(cmd)
+        decode = False
+    
+    while True:
+        l = await proc.stdout.readline()
+        if decode:
+            l = l.decode()
+        if len(l) == 0:
+            return
+        await stdout_coro(l)
 
-async def tmux_ls(remote: Connection, session: str):
+
+async def tmux_ls(remote: asyncssh.SSHClientConnection, session: str):
     
     list_w_cmd = "tmux list-w -t %s -F '#{session_name} #{window_name} #{pane_pid} #{pane_dead} #{pane_dead_status}'" % session
     
@@ -100,7 +121,7 @@ async def tmux_ls(remote: Connection, session: str):
 
 
 
-async def tmux_has_session(remote: Connection, session: str, window: str):
+async def tmux_has_session(remote: asyncssh.SSHClientConnection, session: str, window: str):
 
     retcode, _, _ = await run_cmd(remote, f'tmux has-session -t {session}:{window}', throw_on_failure=False)
 
@@ -112,7 +133,7 @@ async def tmux_has_session(remote: Connection, session: str, window: str):
         raise RuntimeError(f'tmux_has_session: tmux returned unexpected code {retcode}')
 
 
-async def tmux_session_alive(remote: Connection, session: str, window: str):
+async def tmux_session_alive(remote: asyncssh.SSHClientConnection, session: str, window: str):
 
     if not await tmux_has_session(remote, session, window):
 
@@ -126,7 +147,7 @@ async def tmux_session_alive(remote: Connection, session: str, window: str):
 
 tmux_spawn_new_session_lock = asyncio.Lock()
 
-async def tmux_spawn_new_session(remote: Connection, session: str, window: str, cmd: str):
+async def tmux_spawn_new_session(remote: asyncssh.SSHClientConnection, session: str, window: str, cmd: str):
 
     async with tmux_spawn_new_session_lock:
         logger.debug(f'>>>>>>>>>>> BEGIN _tmux_spawn_new_session {session}:{window}')
@@ -135,7 +156,7 @@ async def tmux_spawn_new_session(remote: Connection, session: str, window: str, 
         return ret
 
 
-async def _tmux_spawn_new_session(remote: Connection, session: str, window: str, cmd: str):
+async def _tmux_spawn_new_session(remote: asyncssh.SSHClientConnection, session: str, window: str, cmd: str):
 
     lsdict = await tmux_ls(remote, session)
 
