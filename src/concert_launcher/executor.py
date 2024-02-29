@@ -439,7 +439,7 @@ async def kill(process, cfg, level=0, graceful=True):
 
 async def status(process, cfg, print_to_stdout=True):
 
-    status_dict = {}
+    status_dict = {}  
 
     proc_cfg = {}
 
@@ -455,8 +455,10 @@ async def status(process, cfg, print_to_stdout=True):
         await e.connect()
 
         lsdict = await remote.tmux_ls(e.ssh, e.session)
-
-        status_dict[e.session] = lsdict
+        if e.session in status_dict.keys():
+            status_dict[e.session].update(**lsdict)
+        else:
+            status_dict[e.session] = lsdict
 
     if print_to_stdout:
         print()
