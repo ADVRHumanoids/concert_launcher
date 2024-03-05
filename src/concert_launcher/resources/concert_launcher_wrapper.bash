@@ -3,6 +3,13 @@
 NAME=$1
 CMD=$2
 
+if ! command -v ts &> /dev/null
+then
+    echo "ts could not be found"
+else
+    CMD="$CMD | ts '[%Y-%m-%d %H:%M:%.S]'"
+fi
+
 STDOUT_FILE=/tmp/$NAME.stdout
 
 echo "starting process $NAME ($CMD)" >> $STDOUT_FILE

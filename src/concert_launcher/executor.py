@@ -13,17 +13,16 @@ connection_map : Dict[str, asyncssh.SSHClientConnection] = dict()
 connection_map_lock = asyncio.Lock()
 
 # pending procs = processes that are being started
-pending_proc = set()
+run_pending_proc = set()
+kill_pending_proc = set()
 
 # completed procs = processes that were successfully started
-completed_proc = set()
-completed_proc_cond = asyncio.Condition()
+run_completed_proc = set()
+run_completed_proc_cond = asyncio.Condition()
+kill_completed_proc = set()
+kill_completed_proc_cond = asyncio.Condition()
 
-# complete fn
-async def notify_completed(process):
-    async with completed_proc_cond:
-        completed_proc.add(process)
-        completed_proc_cond.notify_all()
+
 
 class Variant:
 
@@ -58,13 +57,14 @@ class Variant:
 
 class ConfigParser:
     
-    def __init__(self, process, cfg, level) -> None:
+    def __init__(self, process, cfg, notify_ev_callback=None, level=0) -> None:
 
         # master cfg
         self.cfg = cfg
         
         # print with intentation to reflect dependency tree
-        self.print = print_utils.ProgressReporter.get_print_fn(process, level)
+        self.print_fn = print_utils.ProgressReporter.get_print_fn(process, level)
+        self.notify_ev_callback = notify_ev_callback
         
         # not used atm
         self.verbose = config.ConfigOptions.verbose
@@ -107,7 +107,17 @@ class ConfigParser:
 
         #
 
-    
+    async def print(self, text, **kwargs):
+        if self.notify_ev_callback is not None:
+            await self.notify_ev_callback(self.name, text)
+        self.print_fn(text)
+
+
+    async def notify_state(self, state):
+        if self.notify_ev_callback is not None:
+            await self.notify_ev_callback(self.name, f'state is {state}')
+
+
     def parse_cmd(self, user_params, user_variants):
 
         # start with global params + user params
@@ -144,7 +154,7 @@ class ConfigParser:
 
             # connect to remote
             if self.machine is not None and self.machine not in connection_map.keys():
-                self.print(f'opening ssh connection to remote {self.machine}')
+                await self.print(f'opening ssh connection to remote {self.machine}')
                 self.ssh = await self._connect()
                 await self._upload_resources()
                 connection_map[self.machine] = self.ssh 
@@ -197,31 +207,38 @@ class ConfigParser:
 
 
 
-async def execute_process(process, cfg, params={}, variants=[], level=0):
+async def execute_process(process, cfg, params={}, variants=[], notify_event=None, level=0):
+
+    # complete fn
+    async def notify_completed(process):
+        async with run_completed_proc_cond:
+            run_completed_proc.add(process)
+            run_completed_proc_cond.notify_all()
 
     # clear proc cache
     if level == 0:
-        completed_proc.clear()
-        pending_proc.clear()
+        run_completed_proc.clear()
+        run_pending_proc.clear()
     
     # await for process completion if pending
-    if process in pending_proc:
+    if process in run_pending_proc:
         
         logging.info(f'process {process} pending; waiting for completion..')
         
         def is_completed():
-            return process in completed_proc
+            return process in run_completed_proc
         
-        async with completed_proc_cond:
-            await completed_proc_cond.wait_for(is_completed)
+        async with run_completed_proc_cond:
+            await run_completed_proc_cond.wait_for(is_completed)
 
         return
     
     # add to pending
-    pending_proc.add(process)
+    run_pending_proc.add(process)
 
     # parse config
-    e = ConfigParser(process=process, cfg=cfg, level=level)
+    e = ConfigParser(process=process, cfg=cfg, level=level, notify_ev_callback=notify_event)
+    await e.notify_state(state='WaitingDependencies')
 
     # connect ssh
     await e.connect()    
@@ -230,8 +247,8 @@ async def execute_process(process, cfg, params={}, variants=[], level=0):
     dep_coro_list = []
 
     for dep in e.deps:
-        e.print(f'depends on {dep}')
-        dep_coro_list.append(execute_process(dep, cfg, params, variants, level+1))
+        await e.print(f'depends on {dep}')
+        dep_coro_list.append(execute_process(dep, cfg, params, variants, notify_event, level+1))
 
     if len(dep_coro_list) > 0:
         logger.info('waiting for dependencies..')
@@ -244,7 +261,7 @@ async def execute_process(process, cfg, params={}, variants=[], level=0):
     # non-persistent are just one shot commands
     if not e.persistent:
     
-        e.print(f'running command')
+        await e.print(f'running command')
         
         # parse cmdline
         e.parse_cmd(params, variants)
@@ -254,11 +271,11 @@ async def execute_process(process, cfg, params={}, variants=[], level=0):
                                                         interactive=True, 
                                                         throw_on_failure=False)
         for l in stdout.split('\n'):
-            e.print(f'[stdout] {l}')
+            await e.print(f'[stdout] {l}')
         if exitcode != 0:
-            e.print(f'failed (exit code {exitcode})')
+            await e.print(f'failed (exit code {exitcode})')
         else:
-            e.print(f'success')
+            await e.print(f'success')
         
         await notify_completed(process=process)
         return exitcode == 0
@@ -267,16 +284,16 @@ async def execute_process(process, cfg, params={}, variants=[], level=0):
     session_exists = await remote.tmux_session_alive(ssh, e.session, process)
     
     if session_exists:
-        e.print(f'exists')
+        await e.print(f'exists')
     else:
-        e.print(f'running process..')
+        await e.print(f'running process..')
     
         # parse cmdline
         e.parse_cmd(params, variants)
             
         # run
         await remote.tmux_spawn_new_session(ssh, e.session, process, e.cmd)
-        e.print('..done')
+        await e.print('..done')
 
     # ready check
     if e.ready_check is not None:
@@ -285,7 +302,8 @@ async def execute_process(process, cfg, params={}, variants=[], level=0):
             
             t0 = time.time()
 
-            e.print('checking for readiness')
+            await e.print('checking for readiness')
+            await e.notify_state(state='WaitingReady')
 
             retcode, _, _ = await remote.run_cmd(ssh, e.ready_check, interactive=True, throw_on_failure=False)
 
@@ -301,17 +319,24 @@ async def execute_process(process, cfg, params={}, variants=[], level=0):
             await asyncio.sleep(to_sleep)
 
 
-    e.print(f'ready')
+    await e.print(f'ready')
+    await e.notify_state(state='Ready')
     await notify_completed(process=process)
     return True
 
 
-async def kill(process, cfg, level=0, graceful=True):
+async def kill(process, cfg, level=0, graceful=True, notify_event=None):
+
+    # complete fn
+    async def notify_completed(process):
+        async with kill_completed_proc_cond:
+            kill_completed_proc.add(process)
+            kill_completed_proc_cond.notify_all()
 
     # clear proc cache
     if level == 0:
-        completed_proc.clear()
-        pending_proc.clear()
+        kill_completed_proc.clear()
+        kill_pending_proc.clear()
 
     # if process is none, kill all
     if process is None:
@@ -327,32 +352,32 @@ async def kill(process, cfg, level=0, graceful=True):
             if process == 'context':
                 continue
             
-            proc_coro_list.append(kill(process, cfg, level=level+1, graceful=graceful))
+            proc_coro_list.append(kill(process, cfg, level=level+1, graceful=graceful, notify_event=notify_event))
 
         await asyncio.gather(*proc_coro_list)
         return True
     
 
     # await for process completion if pending
-    if process in pending_proc:
+    if process in kill_pending_proc:
         
         logging.info(f'process {process} pending; waiting for completion..')
         
         def is_completed():
-            return process in completed_proc
+            return process in kill_completed_proc
         
-        async with completed_proc_cond:
-            await completed_proc_cond.wait_for(is_completed)
+        async with kill_completed_proc_cond:
+            await kill_completed_proc_cond.wait_for(is_completed)
 
         return True
     
     logger.info(f'kill {process}')
 
     # add to pending
-    pending_proc.add(process)
+    kill_pending_proc.add(process)
 
     # parse config and connect ssh
-    e = ConfigParser(process=process, cfg=cfg, level=level)
+    e = ConfigParser(process=process, cfg=cfg, level=level, notify_ev_callback=notify_event)
     await e.connect()
         
     # look up dependant processes
@@ -371,8 +396,8 @@ async def kill(process, cfg, level=0, graceful=True):
 
         if process in deps and pfield.get('persistent', True):
             
-            e.print(f'found dependant process {pname}')
-            proc_coro_list.append(kill(pname, cfg, level+1, graceful=graceful))
+            await e.print(f'found dependant process {pname}')
+            proc_coro_list.append(kill(pname, cfg, level+1, graceful=graceful, notify_event=notify_event))
 
     # wait until all killed
     if len(proc_coro_list) > 0:
@@ -388,7 +413,7 @@ async def kill(process, cfg, level=0, graceful=True):
         
         # wait until all killed
         if len(proc_coro_list) > 0:
-            e.print('killing dependencies')
+            await e.print('killing dependencies')
             await asyncio.gather(*proc_coro_list)
             proc_coro_list.clear()
             
@@ -399,19 +424,19 @@ async def kill(process, cfg, level=0, graceful=True):
     lsdict = await remote.tmux_ls(e.ssh, e.session)
 
     if process not in lsdict.keys():
-        e.print('not running')
+        await e.print('not running')
         await notify_completed(process=process)
         return True
 
     if lsdict[process]['dead']:
-        e.print('already dead')
+        await e.print('already dead')
         await notify_completed(process=process)
         return True
     
     signame = 'SIGINT' if graceful else 'SIGKILL'
     sigkey = 'C-c' if graceful else 'C-\\\ '
         
-    e.print(f'killing with {signame}')
+    await e.print(f'killing with {signame}')
 
     pid = lsdict[process]['pid']
 
@@ -424,15 +449,15 @@ async def kill(process, cfg, level=0, graceful=True):
 
     # wait for exit, possibly escalate to CTRL+\
     while await remote.tmux_session_alive(e.ssh, e.session, process):
-        e.print('waiting for exit..')
+        await e.print('waiting for exit..')
         await asyncio.sleep(1)
         attempts += 1
         if attempts > 5:
-            e.print('killing with SIGKILL')
+            await e.print('killing with SIGKILL')
             await remote.run_cmd(e.ssh, f'tmux send-keys -t {e.session}:{process} C-\\\ C-m Enter',
                                  interactive=False,
                                  throw_on_failure=True) 
-    e.print('killed')
+    await e.print('killed')
     await notify_completed(process=process)
     return True
 
@@ -509,7 +534,7 @@ async def pstree(process, cfg, level=0):
             pinfo = lsdict[process]
 
             if pinfo['dead']:
-                e.print('dead')
+                await e.print('dead')
                 continue
             
             logging.info(f'adding task for process {process}')
@@ -524,7 +549,7 @@ async def pstree(process, cfg, level=0):
     res = await asyncio.gather(*tasks)
     
     for r in res:
-        r()
+        await r()
 
     return status_dict
     
@@ -536,8 +561,8 @@ async def _pstree(e: ConfigParser, pid):
                     e.ssh,
                     f'python3 /tmp/concert_launcher_print_ps_tree.py {pid}')
     
-    def printer():
-        e.print('process tree: ')
+    async def printer():
+        await e.print('process tree: ')
         print('  ', stdout.replace('\n', '\n  '))
     
     return printer
