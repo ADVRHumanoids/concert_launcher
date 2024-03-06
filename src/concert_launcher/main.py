@@ -186,11 +186,11 @@ async def do_main():
 
             while True:
                 t0 = time.time()
-                print('\n')
                 if args.pstree:
                     await executor.pstree(None, cfg=cfg)
                 else:
                     await executor.status(None, cfg=cfg)
+                print('')
                 await asyncio.sleep(0.666 - (time.time() - t0))
 
         else:
