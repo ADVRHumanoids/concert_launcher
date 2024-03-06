@@ -26,33 +26,33 @@ kill_completed_proc_cond = asyncio.Condition()
 
 class Variant:
 
-        def __init__(self, name: str, cfg: dict):
-            
-            self.name = name
-            
-            vfield = cfg[name]
+    def __init__(self, name: str, cfg: dict):
+        
+        self.name = name
+        
+        vfield = cfg[name]
 
-            self.choices = []
+        self.choices = []
 
-            self.params = {}
+        self.params = {}
 
-            self.cmd = {}
+        self.cmd = {}
 
-            if isinstance(vfield, list):
-                for v in vfield:
-                    self.choices.append(list(v.keys())[0])
-                for i, c in enumerate(self.choices):
-                    self.params[c] = vfield[i][c].get('params', {})
-                    self.cmd[c] = vfield[i][c].get('cmd', None)
-            else:
-                self.choices = [name]
-                self.params[name] = vfield.get('params', {})
-                self.cmd[name] = vfield.get('cmd', None)
-                        
-            logger.debug(f'variant with name {name}')
-            logger.debug(f'        with choices {self.choices}')
-            logger.debug(f'        with params {self.params}')
-            logger.debug(f'        with cmd {self.cmd}')
+        if isinstance(vfield, list):
+            for v in vfield:
+                self.choices.append(list(v.keys())[0])
+            for i, c in enumerate(self.choices):
+                self.params[c] = vfield[i][c].get('params', {})
+                self.cmd[c] = vfield[i][c].get('cmd', None)
+        else:
+            self.choices = [name]
+            self.params[name] = vfield.get('params', {})
+            self.cmd[name] = vfield.get('cmd', None)
+                    
+        logger.debug(f'variant with name {name}')
+        logger.debug(f'        with choices {self.choices}')
+        logger.debug(f'        with params {self.params}')
+        logger.debug(f'        with cmd {self.cmd}')
 
 
 class ConfigParser:
@@ -210,10 +210,15 @@ class ConfigParser:
 async def execute_process(process, cfg, params={}, variants=[], notify_event=None, level=0):
 
     # complete fn
-    async def notify_completed(process):
+    async def notify_completed(process, ssh):
+
+        # notify completion
         async with run_completed_proc_cond:
             run_completed_proc.add(process)
             run_completed_proc_cond.notify_all()
+        
+        # remove marker file
+        await remote.run_cmd(ssh, f'rm -f /tmp/{process}.STARTING')
 
     # clear proc cache
     if level == 0:
@@ -243,6 +248,12 @@ async def execute_process(process, cfg, params={}, variants=[], notify_event=Non
     # connect ssh
     await e.connect()    
 
+    # shorthand
+    ssh = e.ssh
+
+    # create marker file
+    await remote.run_cmd(ssh, f'touch /tmp/{process}.STARTING')
+
     # process dependencies
     dep_coro_list = []
 
@@ -254,9 +265,6 @@ async def execute_process(process, cfg, params={}, variants=[], notify_event=Non
         logger.info('waiting for dependencies..')
         await asyncio.gather(*dep_coro_list)
         logger.info('..ok')
-
-    # shorthand
-    ssh = e.ssh
 
     # non-persistent are just one shot commands
     if not e.persistent:
@@ -277,7 +285,7 @@ async def execute_process(process, cfg, params={}, variants=[], notify_event=Non
         else:
             await e.print(f'success')
         
-        await notify_completed(process=process)
+        await notify_completed(process=process, ssh=e.ssh)
         return exitcode == 0
         
     # check already running
@@ -308,6 +316,7 @@ async def execute_process(process, cfg, params={}, variants=[], notify_event=Non
             retcode, _, _ = await remote.run_cmd(ssh, e.ready_check, interactive=True, throw_on_failure=False)
 
             if not await remote.tmux_session_alive(ssh, e.session, process):
+                await notify_completed(process=process, ssh=e.ssh)
                 raise RuntimeError(f'process {e.session}:{process} no longer exists')
             
             if retcode == 0:
@@ -321,17 +330,20 @@ async def execute_process(process, cfg, params={}, variants=[], notify_event=Non
 
     await e.print(f'ready')
     await e.notify_state(state='Ready')
-    await notify_completed(process=process)
+    await notify_completed(process=process, ssh=e.ssh)
     return True
 
 
 async def kill(process, cfg, level=0, graceful=True, notify_event=None):
 
     # complete fn
-    async def notify_completed(process):
+    async def notify_completed(process, ssh):
         async with kill_completed_proc_cond:
             kill_completed_proc.add(process)
             kill_completed_proc_cond.notify_all()
+        
+        # remove marker file
+        await remote.run_cmd(ssh, f'rm -f /tmp/{process}.KILLING')
 
     # clear proc cache
     if level == 0:
@@ -379,6 +391,9 @@ async def kill(process, cfg, level=0, graceful=True, notify_event=None):
     # parse config and connect ssh
     e = ConfigParser(process=process, cfg=cfg, level=level, notify_ev_callback=notify_event)
     await e.connect()
+    
+    # create marker file
+    await remote.run_cmd(e.ssh, f'touch /tmp/{process}.KILLING')
         
     # look up dependant processes
     proc_coro_list = []
@@ -417,7 +432,7 @@ async def kill(process, cfg, level=0, graceful=True, notify_event=None):
             await asyncio.gather(*proc_coro_list)
             proc_coro_list.clear()
             
-        await notify_completed(process=process)
+        await notify_completed(process=process, ssh=e.ssh)
         return True
 
     # get list of running windows
@@ -425,12 +440,12 @@ async def kill(process, cfg, level=0, graceful=True, notify_event=None):
 
     if process not in lsdict.keys():
         await e.print('not running')
-        await notify_completed(process=process)
+        await notify_completed(process=process, ssh=e.ssh)
         return True
 
     if lsdict[process]['dead']:
         await e.print('already dead')
-        await notify_completed(process=process)
+        await notify_completed(process=process, ssh=e.ssh)
         return True
     
     signame = 'SIGINT' if graceful else 'SIGKILL'
@@ -458,7 +473,7 @@ async def kill(process, cfg, level=0, graceful=True, notify_event=None):
                                  interactive=False,
                                  throw_on_failure=True) 
     await e.print('killed')
-    await notify_completed(process=process)
+    await notify_completed(process=process, ssh=e.ssh)
     return True
 
 

@@ -109,10 +109,13 @@ async def tmux_ls(remote: asyncssh.SSHClientConnection, session: str):
         
         if sname != session:
             continue
+
         ret[wname] = {
             'pid': int(pid),
             'dead': int(dead) == 1,
             'exitstatus': int(dead_status),
+            'run_pending': (await run_cmd(remote, f'ls /tmp/{wname}.STARTING', throw_on_failure=False))[0] == 0,
+            'kill_pending': (await run_cmd(remote, f'ls /tmp/{wname}.KILLING', throw_on_failure=False))[0] == 0,
         }
 
     logger.info(f'tmux ls returns: {ret}')
