@@ -582,7 +582,7 @@ def default_get_printer(process):
 
 
 # watch proc stdout
-async def watch(process: str, cfg: Dict, printer_coro_factory=default_get_printer):
+async def watch(process: str, cfg: Dict, printer_coro_factory=default_get_printer, num_lines='+1'):
 
     # process is none = watch all
     if process is None:
@@ -599,7 +599,7 @@ async def watch(process: str, cfg: Dict, printer_coro_factory=default_get_printe
             await e.connect()
 
             watch_coro = remote.watch_process(e.ssh, 
-                                              f'touch /tmp/{process}.stdout && tail -f -n +1 /tmp/{process}.stdout', 
+                                              f'touch /tmp/{process}.stdout && tail -f -n {num_lines} /tmp/{process}.stdout', 
                                               stdout_coro=printer_coro_factory(process))
 
             tasks.append(watch_coro)
@@ -614,5 +614,5 @@ async def watch(process: str, cfg: Dict, printer_coro_factory=default_get_printe
     await e.connect()
 
     await remote.watch_process(e.ssh, 
-                        f'tail -f -n +1 /tmp/{process}.stdout', 
+                        f'tail -f -n {num_lines} /tmp/{process}.stdout', 
                         stdout_coro=printer_coro_factory(process))
