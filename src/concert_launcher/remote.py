@@ -74,9 +74,18 @@ async def watch_process(remote: asyncssh.SSHClientConnection,
         decode = False
     
     while True:
-        l = await proc.stdout.readline()
+        try:
+            l = await proc.stdout.readline()
+        except BaseException as e:
+            print(f'exception ({e}) while running {cmd} -> skipping line')
+            continue
+            
         if decode:
-            l = l.decode()
+            try:
+                l = l.decode('ascii')
+            except BaseException as e:
+                print(f'exception ({e}) while decoding line from {cmd} -> skipping line')
+                continue
         if len(l) == 0:
             return
         await stdout_coro(l)
