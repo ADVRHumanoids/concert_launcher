@@ -624,7 +624,7 @@ async def watch(process: str, cfg: Dict, printer_coro_factory=default_get_printe
         return
 
 
-    e = ConfigParser(process, cfg, 0)
+    e = ConfigParser(process, cfg, level=0)
 
     await e.connect()
 
