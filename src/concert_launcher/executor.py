@@ -105,7 +105,9 @@ class ConfigParser:
         # save name
         self.name = process
 
-        #
+        # force sigquit
+        self.force_sigquit = pfield.get('force_sigquit', False)
+
 
     async def print(self, text, **kwargs):
         if self.notify_ev_callback is not None:
@@ -438,6 +440,7 @@ async def kill(process, cfg, level=0, graceful=True, notify_event=None):
     # get list of running windows
     lsdict = await remote.tmux_ls(e.ssh, e.session)
 
+    # check if already dead or not running
     if process not in lsdict.keys():
         await e.print('not running')
         await notify_completed(process=process, ssh=e.ssh)
@@ -448,6 +451,11 @@ async def kill(process, cfg, level=0, graceful=True, notify_event=None):
         await notify_completed(process=process, ssh=e.ssh)
         return True
     
+    # check if we need to force sigquit
+    if e.force_sigquit:
+        graceful = False
+
+    # perform actual killing
     signame = 'SIGINT' if graceful else 'SIGKILL'
     sigkey = 'C-c' if graceful else 'C-\\\ '
         
