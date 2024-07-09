@@ -60,7 +60,7 @@ async def create_monitoring_session(process: str, cfg: Dict, level=0):
 
         return
 
-    e = ConfigParser(process, cfg, level)
+    e = ConfigParser(process=process, cfg=cfg, level=level)
 
     await e.connect()
 

@@ -105,7 +105,9 @@ class ConfigParser:
         # save name
         self.name = process
 
-        #
+        # force sigquit
+        self.force_sigquit = pfield.get('force_sigquit', False)
+
 
     async def print(self, text, **kwargs):
         if self.notify_ev_callback is not None:
@@ -491,6 +493,7 @@ async def _kill(process,
     # get list of running windows
     lsdict = await remote.tmux_ls(e.ssh, e.session)
 
+    # check if already dead or not running
     if process not in lsdict.keys():
         await e.print('not running')
         return True
@@ -499,6 +502,11 @@ async def _kill(process,
         await e.print('already dead')
         return True
     
+    # check if we need to force sigquit
+    if e.force_sigquit:
+        graceful = False
+
+    # perform actual killing
     signame = 'SIGINT' if graceful else 'SIGKILL'
     sigkey = 'C-c' if graceful else 'C-\\\ '
         
@@ -674,7 +682,7 @@ async def watch(process: str, cfg: Dict, printer_coro_factory=default_get_printe
         return
 
 
-    e = ConfigParser(process, cfg, 0)
+    e = ConfigParser(process, cfg, level=0)
 
     await e.connect()
 
