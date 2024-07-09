@@ -158,8 +158,10 @@ class ConfigParser:
                 self.ssh = await self._connect()
                 await self._upload_resources()
                 connection_map[self.machine] = self.ssh 
+
             elif self.machine is not None:
                 self.ssh = connection_map[self.machine]
+                
             else:
                 self.ssh = None 
                 await self._upload_resources()
@@ -206,10 +208,12 @@ class ConfigParser:
             logging.info('uploading resources DONE')
 
 
-
 async def execute_process(process, cfg, params={}, variants=[], notify_event=None, level=0):
 
-    # complete fn
+    # parse config
+    e = ConfigParser(process=process, cfg=cfg, level=level, notify_ev_callback=notify_event)
+
+    # finalization fn
     async def notify_completed(process, ssh):
 
         # notify completion
@@ -219,6 +223,38 @@ async def execute_process(process, cfg, params={}, variants=[], notify_event=Non
         
         # remove marker file
         await remote.run_cmd(ssh, f'rm -f /tmp/{process}.STARTING')
+    
+    # actual execution
+    try:
+
+        # connect ssh
+        await e.connect()    
+
+        # shorthand
+        ssh = e.ssh
+
+        return await _execute_process(process, cfg, e, params, variants, notify_event, level)
+
+    except BaseException:
+
+        raise
+
+    finally:
+
+        await notify_completed(process, e.ssh)
+
+    
+async def _execute_process(process: str, 
+                           cfg,
+                           config_parser: ConfigParser, 
+                           params, 
+                           variants, 
+                           notify_event, 
+                           level):
+
+    # shothands
+    e = config_parser
+    ssh = e.ssh
 
     # clear proc cache
     if level == 0:
@@ -226,6 +262,9 @@ async def execute_process(process, cfg, params={}, variants=[], notify_event=Non
         run_pending_proc.clear()
     
     # await for process completion if pending
+    # i.e. the process was already started as a dependency of another
+    await e.notify_state(state='WaitingDependencies')
+
     if process in run_pending_proc:
         
         logging.info(f'process {process} pending; waiting for completion..')
@@ -241,17 +280,8 @@ async def execute_process(process, cfg, params={}, variants=[], notify_event=Non
     # add to pending
     run_pending_proc.add(process)
 
-    # parse config
-    e = ConfigParser(process=process, cfg=cfg, level=level, notify_ev_callback=notify_event)
-    await e.notify_state(state='WaitingDependencies')
-
-    # connect ssh
-    await e.connect()    
-
-    # shorthand
-    ssh = e.ssh
-
     # create marker file
+    # note: this will be removed by the caller function (finally block)
     await remote.run_cmd(ssh, f'touch /tmp/{process}.STARTING')
 
     # process dependencies
@@ -266,7 +296,7 @@ async def execute_process(process, cfg, params={}, variants=[], notify_event=Non
         await asyncio.gather(*dep_coro_list)
         logger.info('..ok')
 
-    # non-persistent are just one shot commands
+    # non-persistent processes are just one shot commands
     if not e.persistent:
     
         await e.print(f'running command')
@@ -278,14 +308,16 @@ async def execute_process(process, cfg, params={}, variants=[], notify_event=Non
         exitcode, stdout, stderr = await remote.run_cmd(ssh, e.cmd, 
                                                         interactive=True, 
                                                         throw_on_failure=False)
+        # print stdout
         for l in stdout.split('\n'):
             await e.print(f'[stdout] {l}')
+        
+        # handle exit code
         if exitcode != 0:
             await e.print(f'failed (exit code {exitcode})')
         else:
             await e.print(f'success')
         
-        await notify_completed(process=process, ssh=e.ssh)
         return exitcode == 0
         
     # check already running
@@ -313,10 +345,9 @@ async def execute_process(process, cfg, params={}, variants=[], notify_event=Non
             await e.print('checking for readiness')
             await e.notify_state(state='WaitingReady')
 
-            retcode, _, _ = await remote.run_cmd(ssh, e.ready_check, interactive=True, throw_on_failure=False)
+            retcode, _, _ = await remote.run_cmd(ssh, e.ready_check, interactive=False, throw_on_failure=False)
 
             if not await remote.tmux_session_alive(ssh, e.session, process):
-                await notify_completed(process=process, ssh=e.ssh)
                 raise RuntimeError(f'process {e.session}:{process} no longer exists')
             
             if retcode == 0:
@@ -326,24 +357,51 @@ async def execute_process(process, cfg, params={}, variants=[], notify_event=Non
             to_sleep = 0.666 - (time.time() - t0)  # at least 1 sec
             
             await asyncio.sleep(to_sleep)
+    
+    # post_execute
 
 
     await e.print(f'ready')
     await e.notify_state(state='Ready')
-    await notify_completed(process=process, ssh=e.ssh)
     return True
 
 
 async def kill(process, cfg, level=0, graceful=True, notify_event=None):
+    
+    e = ConfigParser(process=process, cfg=cfg, level=level, notify_ev_callback=notify_event)
 
-    # complete fn
-    async def notify_completed(process, ssh):
+    try:
+
+        # parse config and connect ssh
+        await e.connect()
+
+        # actual execution
+        return await _kill(process, cfg, e, level, graceful, notify_event)
+
+    except BaseException as ex:
+
+        raise 
+
+    finally:
+
+        # complete fn
         async with kill_completed_proc_cond:
             kill_completed_proc.add(process)
             kill_completed_proc_cond.notify_all()
         
         # remove marker file
-        await remote.run_cmd(ssh, f'rm -f /tmp/{process}.KILLING')
+        await remote.run_cmd(e.ssh, f'rm -f /tmp/{process}.KILLING')
+
+
+async def _kill(process, 
+                cfg,
+                config_parser: ConfigParser, 
+                level, 
+                graceful, 
+                notify_event):
+
+    # shorthand
+    e = config_parser
 
     # clear proc cache
     if level == 0:
@@ -388,10 +446,6 @@ async def kill(process, cfg, level=0, graceful=True, notify_event=None):
     # add to pending
     kill_pending_proc.add(process)
 
-    # parse config and connect ssh
-    e = ConfigParser(process=process, cfg=cfg, level=level, notify_ev_callback=notify_event)
-    await e.connect()
-    
     # create marker file
     await remote.run_cmd(e.ssh, f'touch /tmp/{process}.KILLING')
         
@@ -432,7 +486,6 @@ async def kill(process, cfg, level=0, graceful=True, notify_event=None):
             await asyncio.gather(*proc_coro_list)
             proc_coro_list.clear()
             
-        await notify_completed(process=process, ssh=e.ssh)
         return True
 
     # get list of running windows
@@ -440,12 +493,10 @@ async def kill(process, cfg, level=0, graceful=True, notify_event=None):
 
     if process not in lsdict.keys():
         await e.print('not running')
-        await notify_completed(process=process, ssh=e.ssh)
         return True
 
     if lsdict[process]['dead']:
         await e.print('already dead')
-        await notify_completed(process=process, ssh=e.ssh)
         return True
     
     signame = 'SIGINT' if graceful else 'SIGKILL'
@@ -473,7 +524,6 @@ async def kill(process, cfg, level=0, graceful=True, notify_event=None):
                                  interactive=False,
                                  throw_on_failure=True) 
     await e.print('killed')
-    await notify_completed(process=process, ssh=e.ssh)
     return True
 
 
