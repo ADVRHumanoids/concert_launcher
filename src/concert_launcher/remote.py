@@ -34,6 +34,7 @@ async def run_cmd(remote: asyncssh.SSHClientConnection,
 
     if remote is None:
         proc = await asyncio.create_subprocess_shell(cmd_real, 
+                    stdin=asyncio.subprocess.DEVNULL,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE)
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
