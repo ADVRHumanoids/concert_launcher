@@ -81,6 +81,9 @@ class ConfigParser:
 
         if self.machine == 'local':
             self.machine = None
+
+        # parse docker
+        self.docker = pfield.get('docker', None)
         
         # cmd that returns 0 if proc is ready
         self.ready_check = pfield.get('ready_check', None)
@@ -148,6 +151,12 @@ class ConfigParser:
 
         # escape bash special chars
         self.cmd = self.cmd.replace('$', '\\$')
+        self.cmd = self.cmd.replace('"', '\\"')
+
+        # add docker
+        if self.docker is not None:
+            self.cmd = f'docker exec -it {self.docker} bash -ic \\"{self.cmd}\\"'
+            self.ready_check = f'docker exec -it {self.docker} bash -ic "{self.ready_check}"'
 
 
     async def connect(self):
