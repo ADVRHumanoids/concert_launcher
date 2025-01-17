@@ -156,7 +156,8 @@ class ConfigParser:
         # add docker
         if self.docker is not None:
             self.cmd = f'docker exec -it {self.docker} bash -ic \\"{self.cmd}\\"'
-            self.ready_check = f'docker exec -it {self.docker} bash -ic "{self.ready_check}"'
+            if self.ready_check is not None:
+                self.ready_check = f'docker exec -it {self.docker} bash -ic "{self.ready_check}"'
 
 
     async def connect(self):
