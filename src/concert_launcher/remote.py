@@ -142,8 +142,19 @@ async def tmux_has_session(remote: asyncssh.SSHClientConnection, session: str, w
         return True
     elif retcode == 1:
         return False
+    elif retcode == 127:
+        # Specific check for command not found (tmux likely not installed)
+        err_msg = (f"Failed to run 'tmux': Command not found (exit code 127).\n"
+                   f"  Please ensure 'tmux' is installed on the machine  \n"
+                   f"  and that it's accessible in the environment's PATH where concert_launcher runs.\n"
+                   f"  (Checking for session='{session}', window='{window}')")
+        logger.error(err_msg) # Log the detailed error
+        raise RuntimeError(err_msg)
     else:
-        raise RuntimeError(f'tmux_has_session: tmux returned unexpected code {retcode}')
+        # Handle other unexpected tmux errors
+        err_msg = (f"Command 'tmux has-session -t {session}:{window}' failed with unexpected exit code {retcode}.\n")
+        logger.error(err_msg)
+        raise RuntimeError(err_msg)
 
 
 async def tmux_session_alive(remote: asyncssh.SSHClientConnection, session: str, window: str):
