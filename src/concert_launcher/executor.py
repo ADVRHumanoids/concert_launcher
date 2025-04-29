@@ -170,22 +170,29 @@ class ConfigParser:
                 self.ssh = await self._connect()
                 await self._upload_resources()
                 connection_map[self.machine] = self.ssh 
-
+                return self.ssh is not None
             elif self.machine is not None:
                 self.ssh = connection_map[self.machine]
-                
+                return self.ssh is not None
             else:
                 self.ssh = None 
                 await self._upload_resources()
+                return True
 
 
     async def _connect(self):
         
         user, host = self.machine.split('@')
+        conn = None
 
-        logger.info(f'waiting for ssh connection to {self.machine}')
-        conn = await asyncssh.connect(host=host, username=user, request_pty='force')
-        logger.info(f'created ssh connection to {self.machine}')
+        try:
+            logger.info(f'waiting for ssh connection to {self.machine}')
+            conn = await asyncssh.connect(host=host, username=user, request_pty='force')
+            logger.info(f'created ssh connection to {self.machine}')
+        except asyncssh.ChannelOpenError as ex:
+            logging.error(f'asyncssh.ChannelOpenError: failed to connect to {self.machine} ({ex.reason})')
+        except BaseException as ex:
+            logging.error(f'{ex.__class__}: failed to connect to {self.machine} ({ex})')
 
         return conn 
     
@@ -560,9 +567,15 @@ async def status(process, cfg, print_to_stdout=True):
 
         proc_cfg[process] = e
         
-        await e.connect()
+        if not await e.connect():
+            continue 
+        
+        try:
+            lsdict = await remote.tmux_ls(e.ssh, e.session)
+        except asyncssh.ChannelOpenError as ex:
+            logging.error(f'ERROR {e.machine} {ex}')
+            continue
 
-        lsdict = await remote.tmux_ls(e.ssh, e.session)
         if e.session in status_dict.keys():
             status_dict[e.session].update(**lsdict)
         else:
@@ -679,7 +692,8 @@ async def watch(process: str, cfg: Dict, printer_coro_factory=default_get_printe
 
             e = ConfigParser(process=process, cfg=cfg, level=0)
             
-            await e.connect()
+            if not await e.connect():
+                continue 
 
             watch_coro = remote.watch_process(e.ssh, 
                                               f'touch /tmp/{process}.stdout && tail -f -n {num_lines} /tmp/{process}.stdout', 
