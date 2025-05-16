@@ -7,12 +7,6 @@ import yaml
 from typing import List, Dict
 import asyncio
 
-import warnings
-from cryptography.utils import CryptographyDeprecationWarning
-with warnings.catch_warnings():
-    warnings.filterwarnings('ignore', category=CryptographyDeprecationWarning)
-    import paramiko
-
 from concert_launcher import config
 from concert_launcher import executor
 from concert_launcher import monitoring_session
@@ -46,6 +40,8 @@ async def do_main():
     run = command.add_parser('run', help='run the specified process and its dependencies')
     
     run.add_argument('process', choices=process_choices, help='process name to run')
+    
+    run.add_argument('--watch', '-w', action='store_true', help='wait for process to finish before returning')
     
     run.add_argument('--params', '-p', nargs='+', help='parameters for process execution (key:=value)')
     
@@ -171,6 +167,10 @@ async def do_main():
 
         # run processes
         await executor.execute_process(process=args.process, cfg=cfg, params=params, variants=variants)
+        
+        # handle watch
+        if args.watch:
+            await executor.wait_process(process=args.process, cfg=cfg)
 
     if args.command == 'kill':
 
