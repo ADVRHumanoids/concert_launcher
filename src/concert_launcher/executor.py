@@ -672,7 +672,7 @@ class Printer:
     def __init__(self, process) -> None:
         self.process = process
     async def print(self,l):
-        print('[', self.process, ']', l, end='')
+        print(f'[{self.process}]', l, end='')
 
         
 def default_get_printer(process):
@@ -715,3 +715,26 @@ async def watch(process: str, cfg: Dict, printer_coro_factory=default_get_printe
     await remote.watch_process(e.ssh, 
                         f'tail -f -n {num_lines} /tmp/{process}.stdout', 
                         stdout_coro=printer_coro_factory(process))
+    
+    
+async def wait_process(process, cfg, timeout=0):
+    
+    # connect
+    e = ConfigParser(process=process, cfg=cfg, level=0)
+    
+    if not await e.connect():
+        raise RuntimeError(f'failed to connect to {e.machine}')
+    
+    # coroutine for printing proc output to console
+    watch_coro = watch(process, cfg, num_lines=0)
+    
+    async def poll_status():
+        while True:
+            lsdict = await remote.tmux_ls(e.ssh, e.session)
+            proc_info = lsdict[process]
+            if proc_info['dead']:
+                exit(proc_info['exitstatus'])
+            await asyncio.sleep(1)
+    
+    # run both coroutines
+    await asyncio.gather(watch_coro, poll_status())
