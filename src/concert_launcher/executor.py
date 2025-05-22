@@ -338,6 +338,9 @@ async def _execute_process(process: str,
             await e.print(f'success')
         
         return exitcode == 0
+
+    # parse cmdline
+    e.parse_cmd(params, variants)
         
     # check already running
     session_exists = await remote.tmux_session_alive(ssh, e.session, process)
@@ -347,8 +350,7 @@ async def _execute_process(process: str,
     else:
         await e.print(f'running process..')
     
-        # parse cmdline
-        e.parse_cmd(params, variants)
+        
             
         # run
         await remote.tmux_spawn_new_session(ssh, e.session, process, e.cmd)
