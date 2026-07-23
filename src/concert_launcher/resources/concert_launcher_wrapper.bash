@@ -7,7 +7,7 @@ if ! command -v ts &> /dev/null
 then
     echo "ts could not be found"
 else
-    CMD="$CMD | ts '[%H:%M:%.S]'"
+    CMD="$CMD 2>&1 | ts '[%H:%M:%.S]'"
 fi
 
 STDOUT_FILE=/tmp/$NAME.stdout
