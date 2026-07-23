@@ -24,7 +24,7 @@ echo "process exited with code $RET" >> $STDOUT_FILE
 
 sleep 1
 
-rm /tmp/$NAME.STARTING || true
-rm /tmp/$NAME.KILLING || true
+rm -f /tmp/$NAME.STARTING || true
+rm -f /tmp/$NAME.KILLING || true
 
 exit $RET

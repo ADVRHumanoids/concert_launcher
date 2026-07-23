@@ -99,7 +99,7 @@ async def do_main():
 
     watch.add_argument('--config', '-c', default=dfl_config_path, type=str, help='path config file')
 
-    watch.add_argument('--num-lines', '-n', default='+1', type=str, help='number of output lines to display once started')
+    watch.add_argument('--num-lines', '-n', default='1', type=str, help='number of output lines to display once started')
 
     watch.add_argument('--log-level', '-l', dest='log_level', default='WARNING', 
                         choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],

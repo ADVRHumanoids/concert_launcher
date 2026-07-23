@@ -241,7 +241,7 @@ async def execute_process(process, cfg, params={}, variants=[], notify_event=Non
             run_completed_proc_cond.notify_all()
         
         # remove marker file
-        await remote.run_cmd(ssh, f'rm -f /tmp/{process}.STARTING')
+        await remote.run_cmd(ssh, f'rm -f /tmp/{process}.STARTING 2>/dev/null')
     
     # actual execution
     try:
@@ -385,6 +385,31 @@ async def _execute_process(process: str,
     await e.print(f'ready')
     await e.notify_state(state='Ready')
     return True
+
+
+async def execute_custom_process(process: str, 
+                                 machine: str, 
+                                 cmd: str, 
+                                 session: str,
+                                 docker=None,
+                                 notify_event=None, 
+                                 level=0):
+
+    # create temporary cfg for this custom process
+    cfg = {
+        'context': {
+            'session': session,
+        },
+        process: {
+            'machine': machine,
+            'cmd': cmd,
+        }
+    }
+
+    if docker:
+        cfg[process]['docker'] = docker
+
+    return await execute_process(process, cfg, notify_event=notify_event, level=level)
 
 
 async def kill(process, cfg, level=0, graceful=True, notify_event=None):
@@ -589,7 +614,9 @@ async def status(process, cfg, print_to_stdout=True):
     for s, sdict in status_dict.items():
 
         for p, pdict in sdict.items():
-            
+            if p not in proc_cfg.keys():
+                logging.info(f'got process {p} from tmux ls but it is not in cfg -> skipping')
+                continue
             status = 'DEAD   ' if pdict['dead'] else 'RUNNING'
             pid = pdict['pid']
             ret = pdict['exitstatus']

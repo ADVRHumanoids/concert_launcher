@@ -77,6 +77,12 @@ async def watch_process(remote: asyncssh.SSHClientConnection,
     while True:
         try:
             l = await proc.stdout.readline()
+        except KeyboardInterrupt:
+            proc.terminate()
+            break
+        except asyncio.CancelledError:
+            proc.terminate()
+            raise
         except BaseException as e:
             print(f'exception ({e}) while running {cmd} -> skipping line')
             continue
