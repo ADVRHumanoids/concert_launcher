@@ -589,6 +589,9 @@ async def status(process, cfg, print_to_stdout=True):
     for s, sdict in status_dict.items():
 
         for p, pdict in sdict.items():
+
+            if p not in proc_cfg.keys():
+                continue
             
             status = 'DEAD   ' if pdict['dead'] else 'RUNNING'
             pid = pdict['pid']
