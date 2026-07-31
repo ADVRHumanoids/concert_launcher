@@ -6,7 +6,7 @@ chmod 700 /root/.ssh
 install -m 600 /test-keys/id_ed25519 /root/.ssh/id_ed25519
 
 : > /root/.ssh/known_hosts
-for host in ssh-a ssh-b; do
+for host in ssh-a ssh-b ssh-proxy-a ssh-proxy-b; do
     for attempt in $(seq 1 30); do
         if ssh-keyscan -T 1 "$host" >> /root/.ssh/known_hosts 2>/dev/null; then
             break

@@ -7,6 +7,7 @@ RUN apt-get update \
         bash \
         coreutils \
         moreutils \
+        netcat-openbsd \
         openssh-server \
         procps \
         python3 \
@@ -20,8 +21,12 @@ RUN apt-get update \
     && chmod 700 /home/tester/.ssh
 
 COPY tests/integration/ssh-host/entrypoint.sh /usr/local/bin/concert-test-sshd
+COPY tests/integration/ssh-host/heartbeat.py /usr/local/bin/concert-heartbeat
 COPY tests/integration/ssh-host/signal_receiver.py /usr/local/bin/concert-signal-receiver
-RUN chmod +x /usr/local/bin/concert-test-sshd /usr/local/bin/concert-signal-receiver
+RUN chmod +x \
+    /usr/local/bin/concert-test-sshd \
+    /usr/local/bin/concert-heartbeat \
+    /usr/local/bin/concert-signal-receiver
 
 EXPOSE 22
 

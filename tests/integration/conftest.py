@@ -3,7 +3,7 @@ import pytest_asyncio
 
 from concert_launcher import Launcher
 
-from .helpers import RemoteHost, machine
+from .helpers import RemoteHost, SSHProxy, direct_machine, proxy_url
 
 
 pytestmark = pytest.mark.docker
@@ -11,7 +11,7 @@ pytestmark = pytest.mark.docker
 
 @pytest_asyncio.fixture
 async def remote_a():
-    host = await RemoteHost(machine("A")).connect()
+    host = await RemoteHost(direct_machine("A")).connect()
     try:
         yield host
     finally:
@@ -20,11 +20,31 @@ async def remote_a():
 
 @pytest_asyncio.fixture
 async def remote_b():
-    host = await RemoteHost(machine("B")).connect()
+    host = await RemoteHost(direct_machine("B")).connect()
     try:
         yield host
     finally:
         await host.close()
+
+
+@pytest_asyncio.fixture
+async def proxy_a():
+    proxy = SSHProxy(proxy_url("A"))
+    await proxy.enable()
+    try:
+        yield proxy
+    finally:
+        await proxy.enable()
+
+
+@pytest_asyncio.fixture
+async def proxy_b():
+    proxy = SSHProxy(proxy_url("B"))
+    await proxy.enable()
+    try:
+        yield proxy
+    finally:
+        await proxy.enable()
 
 
 @pytest_asyncio.fixture

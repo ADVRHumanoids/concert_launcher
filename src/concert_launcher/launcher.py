@@ -3,8 +3,8 @@
 import asyncio
 
 from .connections import ConnectionManager
-from .errors import RemoteConnectionError
-from .inspection import pstree, status, wait_process, watch
+from .errors import ConfigurationError, RemoteConnectionError
+from .inspection import default_get_printer, pstree, status, wait_process, watch
 from .lifecycle import execute_process, kill
 from .output import ConsoleReporter
 from .process import ConfigParser
@@ -110,6 +110,68 @@ class Launcher:
             kwargs["printer_coro_factory"] = printer_coro_factory
         return await watch(self, process=process, **kwargs)
 
+    async def watch_with_recovery(
+        self,
+        process,
+        printer_coro_factory=None,
+        num_lines="+1",
+        retries=1,
+        retry_delay=1.0,
+    ):
+        """Watch one process and resume after retryable SSH interruptions.
+
+        When ``num_lines`` is an absolute tail position such as ``"+1"``,
+        retries resume at the first line not yet delivered. Other tail modes
+        are restarted unchanged after reconnecting.
+        """
+        if process is None:
+            raise ConfigurationError(
+                "watch_with_recovery requires an explicit process name"
+            )
+
+        output_factory = printer_coro_factory or default_get_printer
+        output_printer = output_factory(process)
+        delivered = 0
+        attempt = 0
+        current_num_lines = num_lines
+
+        def counting_factory(name):
+            if name != process:
+                raise ConfigurationError(
+                    "unexpected process {!r} while watching {!r}".format(
+                        name, process
+                    )
+                )
+
+            async def print_line(line):
+                nonlocal delivered
+                await output_printer(line)
+                delivered += 1
+
+            return print_line
+
+        while True:
+            try:
+                result = await self.watch(
+                    process,
+                    printer_coro_factory=counting_factory,
+                    num_lines=current_num_lines,
+                )
+            except RemoteConnectionError as exc:
+                if attempt >= retries:
+                    raise
+                recovery_target = exc
+            else:
+                recovery_target = (self.cfg.get(process) or {}).get("machine")
+                if recovery_target in (None, "local") or attempt >= retries:
+                    return result
+
+            attempt += 1
+            await self.recover(recovery_target, reconnect=False)
+            current_num_lines = _resume_tail_position(num_lines, delivered)
+            if retry_delay:
+                await asyncio.sleep(retry_delay)
+
     async def wait_process(self, process, timeout=0, watch_output=True):
         return await wait_process(
             self,
@@ -132,3 +194,13 @@ class Launcher:
 
     async def close(self):
         await self.connection_manager.close_all()
+
+
+def _resume_tail_position(num_lines, delivered):
+    if isinstance(num_lines, str) and num_lines.startswith("+"):
+        try:
+            first_line = int(num_lines[1:])
+        except ValueError:
+            return num_lines
+        return "+{}".format(first_line + delivered)
+    return num_lines

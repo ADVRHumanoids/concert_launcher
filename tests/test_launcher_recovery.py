@@ -56,6 +56,82 @@ class LauncherRecoveryTests(unittest.TestCase):
 
         self.run_async(scenario())
 
+    def test_watch_with_recovery_resumes_after_delivered_lines(self):
+        manager = FakeManager()
+        launcher = Launcher(
+            {"context": {"session": "robot"}},
+            connection_manager=manager,
+        )
+        attempts = []
+        output = []
+
+        def printer_factory(name):
+            self.assertEqual(name, "controller")
+
+            async def collect(line):
+                output.append(line)
+
+            return collect
+
+        async def watch(process, printer_coro_factory=None, num_lines="+1"):
+            attempts.append(num_lines)
+            printer = printer_coro_factory(process)
+            if len(attempts) == 1:
+                await printer("first\n")
+                await printer("second\n")
+                raise RemoteConnectionError(
+                    "operator@robot-pc", "watch process output", OSError("offline")
+                )
+            await printer("third\n")
+            return True
+
+        launcher.watch = watch
+
+        async def scenario():
+            result = await launcher.watch_with_recovery(
+                "controller",
+                printer_coro_factory=printer_factory,
+                retries=1,
+                retry_delay=0,
+            )
+            self.assertTrue(result)
+            self.assertEqual(attempts, ["+1", "+3"])
+            self.assertEqual(output, ["first\n", "second\n", "third\n"])
+            self.assertEqual(manager.invalidated, ["operator@robot-pc"])
+
+        self.run_async(scenario())
+
+    def test_watch_with_recovery_retries_unexpected_remote_eof(self):
+        manager = FakeManager()
+        launcher = Launcher(
+            {
+                "context": {"session": "robot"},
+                "controller": {
+                    "machine": "operator@robot-pc",
+                    "cmd": "run-controller",
+                },
+            },
+            connection_manager=manager,
+        )
+        attempts = []
+
+        async def watch(process, printer_coro_factory=None, num_lines="+1"):
+            del process, printer_coro_factory
+            attempts.append(num_lines)
+            return None if len(attempts) == 1 else True
+
+        launcher.watch = watch
+
+        async def scenario():
+            result = await launcher.watch_with_recovery(
+                "controller", retries=1, retry_delay=0
+            )
+            self.assertTrue(result)
+            self.assertEqual(attempts, ["+1", "+1"])
+            self.assertEqual(manager.invalidated, ["operator@robot-pc"])
+
+        self.run_async(scenario())
+
     def test_recover_can_reconnect_immediately(self):
         manager = FakeManager()
         launcher = Launcher(
