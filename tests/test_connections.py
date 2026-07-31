@@ -50,6 +50,10 @@ class ConnectionManagerTests(unittest.TestCase):
             recovered = await manager.get("robot@10.0.0.2")
             self.assertIs(recovered, connection)
             self.assertEqual(len(attempts), 2)
+            self.assertEqual(
+                attempts[-1],
+                {"host": "10.0.0.2", "username": "robot"},
+            )
 
         self.run_async(scenario())
 

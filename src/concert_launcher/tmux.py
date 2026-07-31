@@ -13,7 +13,8 @@ logger = logging.getLogger(__name__)
 async def list_windows(connection, session):
     command = (
         "tmux list-w -t {} -F "
-        "'#{session_name} #{window_name} #{pane_pid} #{pane_dead} #{pane_dead_status}'"
+        "'#{{session_name}} #{{window_name}} #{{pane_pid}} "
+        "#{{pane_dead}} #{{pane_dead_status}}'"
     ).format(shlex.quote(session))
     returncode, stdout, stderr = await run_cmd(
         connection, command, throw_on_failure=False

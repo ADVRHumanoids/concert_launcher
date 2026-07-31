@@ -74,7 +74,6 @@ class ConnectionManager:
                 connection = await self._connect(
                     host=host,
                     username=user,
-                    request_pty="force",
                 )
             except asyncio.CancelledError:
                 raise

@@ -65,7 +65,10 @@ async def run_cmd(
             stderr = stderr_bytes.decode(errors="replace")
             returncode = proc.returncode
         else:
-            result = await connection.run(cmd_real, check=False, timeout=timeout)
+            run_options = {"check": False, "timeout": timeout}
+            if interactive:
+                run_options["request_pty"] = "force"
+            result = await connection.run(cmd_real, **run_options)
             returncode = result.returncode
             stdout = result.stdout
             stderr = result.stderr
