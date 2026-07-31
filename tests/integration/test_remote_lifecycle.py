@@ -67,21 +67,29 @@ async def test_stream_output_and_return_remote_exit_status(
         await remote_a.cleanup(session, [process])
 
 
-async def test_graceful_kill_stops_remote_tmux_process(
+async def test_graceful_kill_delivers_sigint_to_remote_process(
     launcher_factory,
     remote_a,
 ):
     session = unique_name("kill_session")
-    process = unique_name("heartbeat")
+    process = unique_name("signal_receiver")
     signal_file = f"/tmp/{process}.signal"
+    command = (
+        "python3 -c '"
+        "import pathlib, signal, sys; "
+        f"path = pathlib.Path(\"{signal_file}\"); "
+        "signal.signal(signal.SIGINT, "
+        "lambda *_: (path.write_text(\"SIGINT\"), sys.exit(0))); "
+        "print(\"signal-handler-ready\", flush=True); "
+        "signal.pause()'"
+    )
     config = {
         "context": {"session": session},
         process: {
             "machine": machine("A"),
-            "cmd": (
-                f"trap 'echo SIGINT > {signal_file}; exit 0' INT; "
-                "while true; do echo heartbeat; sleep 0.2; done"
-            ),
+            "cmd": command,
+            "ready_check": f"test -f /tmp/{process}.stdout && "
+            f"grep -q signal-handler-ready /tmp/{process}.stdout",
         },
     }
     launcher = launcher_factory(config)
@@ -94,6 +102,9 @@ async def test_graceful_kill_stops_remote_tmux_process(
         entry = status[session][process]
         assert entry["state"] == "DEAD"
         assert await remote_a.run(f"cat {signal_file}") == "SIGINT"
+        assert "process exited with code 0" in await remote_a.run(
+            f"cat /tmp/{process}.stdout"
+        )
     finally:
         await remote_a.run(f"rm -f {signal_file}", check=False)
         await remote_a.cleanup(session, [process])
