@@ -12,7 +12,6 @@ RUN apt-get update \
         python3 \
         python3-psutil \
         tmux \
-        util-linux \
     && rm -rf /var/lib/apt/lists/* \
     && useradd --create-home --shell /bin/bash tester \
     && echo "tester:integration-only" | chpasswd \

@@ -1,37 +1,33 @@
 #!/bin/bash
 set -u
+set -o pipefail
 
 NAME=$1
 CMD=$2
 STDOUT_FILE=/tmp/$NAME.stdout
-RUNNER_FILE=/tmp/$NAME.runner.$$.bash
 
 cleanup() {
-    rm -f "$RUNNER_FILE"
     rm -f "/tmp/$NAME.STARTING" "/tmp/$NAME.KILLING"
 }
 trap cleanup EXIT
 
-{
-    echo '#!/bin/bash'
-    echo 'set -o pipefail'
-    echo 'export PYTHONUNBUFFERED=1'
-    printf 'CMD=%q\n' "$CMD"
-    cat <<'RUNNER'
+# The wrapper shares tmux's terminal with the launched command. Ignore the
+# stop signals here so the foreground command can handle them and the wrapper
+# can still record its exit status and clean up marker files.
+trap ':' INT QUIT
+
+echo "starting process $NAME ($CMD)" | tee -a "$STDOUT_FILE"
+
+export PYTHONUNBUFFERED=1
+
 if command -v ts >/dev/null 2>&1; then
-    stdbuf -oL bash -ic "$CMD" 2>&1 | ts '[%H:%M:%.S]'
+    stdbuf -oL bash -ic "$CMD" 2>&1 | ts '[%H:%M:%.S]' | tee -a "$STDOUT_FILE"
+    RET=${PIPESTATUS[0]}
 else
-    stdbuf -oL bash -ic "$CMD"
+    stdbuf -oL bash -ic "$CMD" 2>&1 | tee -a "$STDOUT_FILE"
+    RET=${PIPESTATUS[0]}
 fi
-RUNNER
-} > "$RUNNER_FILE"
-chmod 700 "$RUNNER_FILE"
 
-echo "starting process $NAME ($CMD)" >> "$STDOUT_FILE"
-
-script --append --flush --return --command "$RUNNER_FILE" "$STDOUT_FILE"
-RET=$?
-
-echo "process exited with code $RET" >> "$STDOUT_FILE"
+echo "process exited with code $RET" | tee -a "$STDOUT_FILE"
 sleep 1
 exit "$RET"
