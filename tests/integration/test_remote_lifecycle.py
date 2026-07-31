@@ -75,22 +75,14 @@ async def test_graceful_kill_delivers_sigint_to_remote_process(
     process = unique_name("signal_receiver")
     signal_file = f"/tmp/{process}.signal"
     ready_file = f"/tmp/{process}.ready"
-    command = (
-        "python3 -c '"
-        "import pathlib, signal, sys; "
-        f"signal_path = pathlib.Path(\"{signal_file}\"); "
-        f"ready_path = pathlib.Path(\"{ready_file}\"); "
-        "signal.signal(signal.SIGINT, "
-        "lambda *_: (signal_path.write_text(\"SIGINT\"), sys.exit(0))); "
-        "ready_path.write_text(\"ready\"); "
-        "print(\"signal-handler-ready\", flush=True); "
-        "signal.pause()'"
-    )
     config = {
         "context": {"session": session},
         process: {
             "machine": machine("A"),
-            "cmd": command,
+            "cmd": (
+                f"python3 /usr/local/bin/concert-signal-receiver "
+                f"{signal_file} {ready_file}"
+            ),
             "ready_check": f"test -f {ready_file}",
         },
     }
