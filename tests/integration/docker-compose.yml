@@ -1,0 +1,31 @@
+services:
+  ssh-a:
+    build:
+      context: ../..
+      dockerfile: tests/integration/ssh-host/Dockerfile
+    hostname: ssh-a
+    volumes:
+      - ./.state:/test-keys:ro
+
+  ssh-b:
+    build:
+      context: ../..
+      dockerfile: tests/integration/ssh-host/Dockerfile
+    hostname: ssh-b
+    volumes:
+      - ./.state:/test-keys:ro
+
+  runner:
+    build:
+      context: ../..
+      dockerfile: tests/integration/runner/Dockerfile
+    environment:
+      CONCERT_TEST_SSH_A: tester@ssh-a
+      CONCERT_TEST_SSH_B: tester@ssh-b
+    volumes:
+      - ./.state:/test-keys:ro
+    depends_on:
+      ssh-a:
+        condition: service_healthy
+      ssh-b:
+        condition: service_healthy
