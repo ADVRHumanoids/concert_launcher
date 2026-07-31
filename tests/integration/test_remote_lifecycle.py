@@ -74,12 +74,15 @@ async def test_graceful_kill_delivers_sigint_to_remote_process(
     session = unique_name("kill_session")
     process = unique_name("signal_receiver")
     signal_file = f"/tmp/{process}.signal"
+    ready_file = f"/tmp/{process}.ready"
     command = (
         "python3 -c '"
         "import pathlib, signal, sys; "
-        f"path = pathlib.Path(\"{signal_file}\"); "
+        f"signal_path = pathlib.Path(\"{signal_file}\"); "
+        f"ready_path = pathlib.Path(\"{ready_file}\"); "
         "signal.signal(signal.SIGINT, "
-        "lambda *_: (path.write_text(\"SIGINT\"), sys.exit(0))); "
+        "lambda *_: (signal_path.write_text(\"SIGINT\"), sys.exit(0))); "
+        "ready_path.write_text(\"ready\"); "
         "print(\"signal-handler-ready\", flush=True); "
         "signal.pause()'"
     )
@@ -88,8 +91,7 @@ async def test_graceful_kill_delivers_sigint_to_remote_process(
         process: {
             "machine": machine("A"),
             "cmd": command,
-            "ready_check": f"test -f /tmp/{process}.stdout && "
-            f"grep -q signal-handler-ready /tmp/{process}.stdout",
+            "ready_check": f"test -f {ready_file}",
         },
     }
     launcher = launcher_factory(config)
@@ -106,5 +108,8 @@ async def test_graceful_kill_delivers_sigint_to_remote_process(
             f"cat /tmp/{process}.stdout"
         )
     finally:
-        await remote_a.run(f"rm -f {signal_file}", check=False)
+        await remote_a.run(
+            f"rm -f {signal_file} {ready_file}",
+            check=False,
+        )
         await remote_a.cleanup(session, [process])
