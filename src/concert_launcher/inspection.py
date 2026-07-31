@@ -184,6 +184,9 @@ async def wait_process(launcher, process, timeout=0, watch_output=True):
             if info is None:
                 raise ProcessError("process {!r} is not running".format(process))
             if info["dead"]:
+                if info["exitstatus"] is None:
+                    await asyncio.sleep(0.05)
+                    continue
                 return info["exitstatus"]
             await asyncio.sleep(1)
 

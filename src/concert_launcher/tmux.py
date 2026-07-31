@@ -13,8 +13,8 @@ logger = logging.getLogger(__name__)
 async def list_windows(connection, session):
     command = (
         "tmux list-w -t {} -F "
-        "'#{{session_name}} #{{window_name}} #{{pane_pid}} "
-        "#{{pane_dead}} #{{pane_dead_status}}'"
+        "'#{{session_name}}\t#{{window_name}}\t#{{pane_pid}}\t"
+        "#{{pane_dead}}\texit=#{{pane_dead_status}}'"
     ).format(shlex.quote(session))
     returncode, stdout, stderr = await run_cmd(
         connection, command, throw_on_failure=False
@@ -26,19 +26,20 @@ async def list_windows(connection, session):
 
     result = {}
     for line in stdout.splitlines():
-        tokens = line.strip().split()
-        if len(tokens) == 4:
-            tokens.append("0")
-        if len(tokens) != 5:
+        tokens = [token.strip() for token in line.split("\t")]
+        if len(tokens) != 5 or not tokens[4].startswith("exit="):
             logger.warning("ignoring unexpected tmux row: %r", line)
             continue
-        session_name, window, pid, dead, dead_status = tokens
+        session_name, window, pid, dead, exit_field = tokens
         if session_name != session:
             continue
+        is_dead = dead == "1"
+        dead_status = exit_field[len("exit="):]
+        exitstatus = int(dead_status) if dead_status else (None if is_dead else 0)
         result[window] = {
             "pid": int(pid),
-            "dead": dead == "1",
-            "exitstatus": int(dead_status),
+            "dead": is_dead,
+            "exitstatus": exitstatus,
             "run_pending": (
                 await run_cmd(
                     connection,
