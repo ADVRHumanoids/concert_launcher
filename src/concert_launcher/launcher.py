@@ -1,4 +1,8 @@
-"""High-level asyncio API for Concert Launcher."""
+"""Expose the reusable asyncio API and own shared launcher resources.
+
+``Launcher`` binds configuration, connection lifetime, reporting, lifecycle
+operations, and recovery helpers into one object suitable for embedding.
+"""
 
 import asyncio
 
@@ -19,11 +23,14 @@ class Launcher:
     """
 
     def __init__(self, cfg, connection_manager=None, reporter=None):
+        # One manager per Launcher scopes cached transports to the embedding
+        # application and gives ``close()`` a clear ownership boundary.
         self.cfg = cfg
         self.connection_manager = connection_manager or ConnectionManager()
         self.reporter = reporter or ConsoleReporter()
 
     def process(self, name, level=0, notify_event=None):
+        """Build the validated runtime view used by lifecycle operations."""
         return ConfigParser(
             name,
             self.cfg,
@@ -33,6 +40,7 @@ class Launcher:
             reporter=self.reporter,
         )
 
+    # Lifecycle facade -----------------------------------------------------
     async def execute_process(
         self,
         process,
@@ -71,6 +79,8 @@ class Launcher:
                 if attempt >= retries:
                     raise
                 attempt += 1
+                # Invalidate now; the next operation opens the replacement
+                # connection after the configured backoff.
                 await self.recover(exc, reconnect=False)
                 if retry_delay:
                     await asyncio.sleep(retry_delay)
@@ -83,6 +93,7 @@ class Launcher:
             notify_event=notify_event,
         )
 
+    # Inspection facade ----------------------------------------------------
     async def status(
         self,
         process=None,
@@ -129,6 +140,8 @@ class Launcher:
                 "watch_with_recovery requires an explicit process name"
             )
 
+        # Wrap the user's printer so each delivered line advances the resume
+        # cursor. The same printer instance is retained across reconnects.
         output_factory = printer_coro_factory or default_get_printer
         output_printer = output_factory(process)
         delivered = 0
@@ -150,6 +163,8 @@ class Launcher:
 
             return print_line
 
+        # A watch can end via a typed transport error or an unexpected remote
+        # EOF. Both cases reconnect only for remote processes and within budget.
         while True:
             try:
                 result = await self.watch(
@@ -180,6 +195,7 @@ class Launcher:
             watch_output=watch_output,
         )
 
+    # Connection lifecycle -------------------------------------------------
     async def recover(self, error_or_machine, reconnect=True):
         """Invalidate a broken SSH connection and optionally reconnect now."""
         machine = (
@@ -193,10 +209,12 @@ class Launcher:
         return None
 
     async def close(self):
+        """Release every SSH connection owned by this Launcher."""
         await self.connection_manager.close_all()
 
 
 def _resume_tail_position(num_lines, delivered):
+    """Advance an absolute ``tail -n +N`` position by delivered lines."""
     if isinstance(num_lines, str) and num_lines.startswith("+"):
         try:
             first_line = int(num_lines[1:])

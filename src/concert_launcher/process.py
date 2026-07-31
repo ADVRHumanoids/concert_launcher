@@ -1,4 +1,9 @@
-"""Configuration parsing for one managed process."""
+"""Turn one raw process entry into an executable runtime configuration.
+
+This module validates configuration, applies variants and parameters, resolves
+local/remote execution, and installs helper resources before lifecycle code
+starts operating on the process.
+"""
 
 import inspect
 import logging
@@ -12,6 +17,8 @@ logger = logging.getLogger(__name__)
 
 
 class Variant:
+    """Normalize one variant declaration into selectable choices."""
+
     def __init__(self, name, variants_config):
         self.name = name
         field = variants_config[name]
@@ -19,6 +26,8 @@ class Variant:
         self.params = {}
         self.commands = {}
 
+        # A list represents a mutually exclusive choice group; a mapping
+        # represents a single optional variant with the same name.
         if isinstance(field, list):
             for item in field:
                 if len(item) != 1:
@@ -53,11 +62,15 @@ class ConfigParser:
         connection_manager=None,
         reporter=None,
     ):
+        # Fail during construction so graph traversal never begins with a
+        # partially valid process definition.
         if process not in cfg or process == "context":
             raise ConfigurationError("unknown process {!r}".format(process))
         if "context" not in cfg or "session" not in cfg["context"]:
             raise ConfigurationError("configuration requires context.session")
 
+        # Shared services are injected by Launcher, while the remaining fields
+        # describe this specific node in the dependency graph.
         self.cfg = cfg
         self.name = process
         self.level = level
@@ -70,6 +83,8 @@ class ConfigParser:
         if "cmd" not in self.pfield:
             raise ConfigurationError("process {!r} requires cmd".format(process))
 
+        # Resolve effective execution settings once. Lifecycle modules can then
+        # consume a stable, validated object instead of rereading raw YAML.
         self.machine = self.pfield.get("machine")
         if self.machine == "local":
             self.machine = None
@@ -87,6 +102,7 @@ class ConfigParser:
         self.ssh = None
 
     async def print(self, text, **kwargs):
+        """Send an event to both the embedding callback and the reporter."""
         del kwargs
         if self.notify_ev_callback is not None:
             result = self.notify_ev_callback(self.name, text)
@@ -98,12 +114,16 @@ class ConfigParser:
             self.print_fn(text)
 
     async def notify_state(self, state):
+        """Publish machine-readable lifecycle state without duplicate output."""
         if self.notify_ev_callback is not None:
             result = self.notify_ev_callback(self.name, "state is {}".format(state))
             if inspect.isawaitable(result):
                 await result
 
     def parse_cmd(self, user_params=None, user_variants=None):
+        """Apply context parameters, selected variants, and Docker wrapping."""
+        # User parameters override context defaults; selected variants may then
+        # add parameters or replace/wrap the base command.
         params = dict(self.cfg["context"].get("params", {}))
         params.update(user_params or {})
         command = self.pfield["cmd"]
@@ -125,6 +145,8 @@ class ConfigParser:
                 command = replacement.replace("{cmd}", command)
             params.update(variant.params[choice])
 
+        # Formatting happens after all overrides so missing values identify the
+        # final command the user actually requested.
         try:
             command = command.format(**params)
         except KeyError as exc:
@@ -132,6 +154,8 @@ class ConfigParser:
                 "missing parameter {} for process {!r}".format(exc, self.name)
             ) from exc
 
+        # Preserve the historical shell-escaping contract before optionally
+        # nesting the command and readiness check inside Docker.
         command = command.replace("$", "\\$").replace('"', '\\"')
         if self.docker is not None:
             command = 'docker exec -it {} bash -ic \\"{}\\"'.format(
@@ -145,6 +169,7 @@ class ConfigParser:
         return command
 
     async def connect(self, announce=True):
+        """Resolve the transport and install target-side helper scripts."""
         self.ssh = await self.connection_manager.get(self.machine)
         if announce:
             await self.print(

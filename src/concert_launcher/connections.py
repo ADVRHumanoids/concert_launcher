@@ -1,4 +1,9 @@
-"""AsyncSSH connection caching and recovery."""
+"""Own AsyncSSH connection reuse, validation, and recovery.
+
+Callers ask for a machine by name and receive either a healthy SSH connection
+or ``None`` for local execution. This module is the only place which caches
+connections, so stale transports and reconnect behavior remain consistent.
+"""
 
 import asyncio
 import logging
@@ -23,6 +28,8 @@ class ConnectionManager:
         self._lock = None
         self._lock_loop = None
 
+    # Serialize cache changes so concurrent graph nodes do not open duplicate
+    # connections to the same machine.
     def _get_lock(self):
         loop = asyncio.get_event_loop()
         if self._lock is None or self._lock_loop is not loop:
@@ -30,6 +37,8 @@ class ConnectionManager:
             self._lock_loop = loop
         return self._lock
 
+    # Machine validation belongs here because every remote operation flows
+    # through this manager before an AsyncSSH connection is created.
     @staticmethod
     def _parse_machine(machine):
         if not machine or "@" not in machine:
@@ -43,6 +52,8 @@ class ConnectionManager:
             )
         return user, host
 
+    # AsyncSSH versions expose slightly different health helpers. Treat any
+    # failing health check as closed rather than risking reuse of a bad socket.
     @staticmethod
     def _is_closed(connection):
         for attribute in ("is_closed", "is_closing"):
@@ -61,9 +72,14 @@ class ConnectionManager:
             return None
 
         async with self._get_lock():
+            # Fast path: reuse a cached connection only after confirming that
+            # its transport is still open.
             cached = self._connections.get(machine)
             if cached is not None and not self._is_closed(cached):
                 return cached
+
+            # Slow path: remove a stale cache entry before opening a fresh SSH
+            # transport. Failed attempts never enter the cache.
             if cached is not None:
                 await self._close_connection(cached)
                 self._connections.pop(machine, None)
@@ -80,6 +96,8 @@ class ConnectionManager:
             except Exception as exc:
                 raise RemoteConnectionError(machine, "connect", exc) from exc
 
+            # Defensive checks keep ``None`` reserved exclusively for local
+            # execution and prevent a closed connection from being cached.
             if connection is None:
                 raise RemoteConnectionError(
                     machine, "connect", RuntimeError("AsyncSSH returned no connection")
@@ -108,12 +126,15 @@ class ConnectionManager:
         return await self.get(machine)
 
     async def close_all(self):
+        """Close every cached transport during launcher shutdown."""
         async with self._get_lock():
             connections = list(self._connections.values())
             self._connections.clear()
         for connection in connections:
             await self._close_connection(connection)
 
+    # Closing is best-effort: cleanup failures must not hide the original
+    # launcher error which triggered invalidation.
     @staticmethod
     async def _close_connection(connection):
         close = getattr(connection, "close", None)
@@ -127,4 +148,5 @@ class ConnectionManager:
                 logger.debug("error while closing SSH connection", exc_info=True)
 
 
+# Module-level compatibility path used by the historical function API.
 default_connection_manager = ConnectionManager()

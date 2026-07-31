@@ -1,4 +1,8 @@
-"""Local and AsyncSSH command transport primitives."""
+"""Execute commands and copy files over local or AsyncSSH transports.
+
+Every higher-level module uses these primitives, which keeps local/remote
+behavior aligned and converts transport failures into ``RemoteConnectionError``.
+"""
 
 import asyncio
 import logging
@@ -12,6 +16,8 @@ from .errors import CommandError, RemoteConnectionError
 logger = logging.getLogger(__name__)
 
 
+# Error messages should identify the host even when an AsyncSSH object exposes
+# its connection metadata through private attributes.
 def connection_machine(connection):
     if connection is None:
         return "local"
@@ -24,6 +30,7 @@ def connection_machine(connection):
     return str(host or "remote host")
 
 
+# Resource deployment uses a normal filesystem copy locally and SCP remotely.
 async def putfile(connection, local_path, remote_path):
     if connection is None:
         shutil.copy(local_path, remote_path)
@@ -47,10 +54,15 @@ async def run_cmd(
     interactive=False,
     throw_on_failure=True,
 ):
+    """Run one finite command and return ``(code, stdout, stderr)``."""
+    # Interactive commands use a login-style shell. A PTY is requested only
+    # for this path because forcing one on the shared connection breaks SCP.
     cmd_real = "bash -ic {}".format(shlex.quote(cmd)) if interactive else cmd
     logger.debug("running on %s: %s", connection_machine(connection), cmd_real)
 
     try:
+        # Local and SSH execution intentionally converge on the same normalized
+        # return tuple before error policy is applied below.
         if connection is None:
             proc = await asyncio.create_subprocess_shell(
                 cmd_real,
@@ -75,6 +87,8 @@ async def run_cmd(
     except asyncio.CancelledError:
         raise
     except asyncio.TimeoutError as exc:
+        # Remote timeouts are recoverable transport failures; local timeouts
+        # remain command failures because no connection can be refreshed.
         if connection is not None:
             raise RemoteConnectionError(
                 connection_machine(connection),
@@ -91,6 +105,8 @@ async def run_cmd(
             ) from exc
         raise
 
+    # Normalize AsyncSSH and subprocess output before deciding whether a
+    # non-zero return code should be raised or returned to the caller.
     stdout = (stdout or "").strip()
     stderr = (stderr or "").strip()
     if throw_on_failure and returncode != 0:
@@ -105,8 +121,11 @@ async def watch_process(
     interactive=False,
     throw_on_failure=True,
 ):
+    """Stream stdout lines until the command ends or the transport fails."""
     del interactive, throw_on_failure
     try:
+        # Keep the stream object alive while forwarding each line to the
+        # caller-provided coroutine. The higher layer owns cancellation.
         if connection is None:
             proc = await asyncio.create_subprocess_shell(
                 cmd,

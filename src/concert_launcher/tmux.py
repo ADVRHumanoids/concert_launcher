@@ -1,4 +1,9 @@
-"""Tmux process-management primitives."""
+"""Discover, classify, and control Concert Launcher tmux windows.
+
+Window ownership is the central safety rule in this module. Launcher-created
+windows are tagged, legacy wrapper windows remain recognized, and foreign or
+ambiguous name collisions are never controlled.
+"""
 
 import asyncio
 import logging
@@ -9,11 +14,16 @@ from .remote import run_cmd
 
 logger = logging.getLogger(__name__)
 
+# New windows carry this tmux user option. WRAPPER_PATH recognizes windows
+# created by older Concert Launcher versions before the option existed.
 MANAGED_OPTION = "@concert_launcher_managed"
 WRAPPER_PATH = "/tmp/concert_launcher_wrapper.bash"
 
 
 async def list_windows(connection, session):
+    """Return tmux windows keyed by name with ownership and lifecycle state."""
+    # Request every field in one tab-delimited command. Tabs preserve an empty
+    # live exit-status column, unlike ordinary whitespace splitting.
     command = (
         "tmux list-w -t {} -F "
         "'#{{session_name}}\t#{{window_name}}\t#{{window_id}}\t"
@@ -30,6 +40,7 @@ async def list_windows(connection, session):
 
     result = {}
     for line in stdout.splitlines():
+        # Limit splitting so a start command containing tabs remains one field.
         tokens = [token.strip() for token in line.split("\t", 7)]
         if (
             len(tokens) != 8
@@ -52,6 +63,8 @@ async def list_windows(connection, session):
         if session_name != session:
             continue
 
+        # Derive the stable process facts first, then layer ownership and marker
+        # state on top. Marker files are checked only for windows we own.
         is_dead = dead == "1"
         dead_status = exit_field[len("exit="):]
         exitstatus = int(dead_status) if dead_status else (None if is_dead else 0)
@@ -77,6 +90,8 @@ async def list_windows(connection, session):
             "kill_pending": kill_pending,
         }
 
+        # Tmux allows duplicate window names. Replace any duplicate with an
+        # intentionally unusable record so later code cannot target by name.
         if window in result:
             previous = result[window]
             ids = list(previous.get("window_ids", [])) + [window_id]
@@ -98,6 +113,7 @@ async def list_windows(connection, session):
 
 
 async def _marker_exists(connection, window, suffix):
+    """Check a launcher marker using a shell-safe path."""
     path = shlex.quote("/tmp/{}{}".format(window, suffix))
     return (
         await run_cmd(
@@ -108,6 +124,8 @@ async def _marker_exists(connection, window, suffix):
     )[0] == 0
 
 
+# Ownership policy is expressed in one place so start, stop, monitoring, and
+# status all agree on what constitutes a safe target.
 def window_conflict_message(session, window, info):
     if info is None:
         return None
@@ -130,6 +148,7 @@ def require_managed_window(session, window, info):
 
 
 async def has_window(connection, session, window):
+    """Report whether tmux resolves the named session/window target."""
     target = "{}:{}".format(session, window)
     command = "tmux has-session -t {}".format(shlex.quote(target))
     returncode, _, stderr = await run_cmd(
@@ -149,6 +168,7 @@ async def has_window(connection, session, window):
 
 
 async def window_alive(connection, session, window):
+    """Return true only for a unique, live, launcher-managed window."""
     windows = await list_windows(connection, session)
     info = windows.get(window)
     if info is None or info.get("ambiguous") or not info.get("managed"):
@@ -156,6 +176,8 @@ async def window_alive(connection, session, window):
     return not info["dead"]
 
 
+# Spawning is serialized because concurrent dependency branches may create the
+# same tmux session at the same time.
 _spawn_lock_value = None
 _spawn_lock_loop = None
 
@@ -170,11 +192,13 @@ def _spawn_lock():
 
 
 async def spawn_window(connection, session, window, cmd):
+    """Create or respawn one managed window under the global spawn lock."""
     async with _spawn_lock():
         return await _spawn_window(connection, session, window, cmd)
 
 
 async def _spawn_window(connection, session, window, cmd):
+    """Choose new session, new window, or safe managed respawn."""
     windows = await list_windows(connection, session)
     quoted_cmd = shlex.quote(cmd)
     quoted_session = shlex.quote(session)
@@ -186,6 +210,8 @@ async def _spawn_window(connection, session, window, cmd):
         MANAGED_OPTION,
     )
 
+    # No windows means the session does not exist: create the session and apply
+    # session-wide defaults before returning.
     if not windows:
         commands = [
             (
@@ -199,6 +225,7 @@ async def _spawn_window(connection, session, window, cmd):
             "tmux set -t {} history-limit 10000".format(quoted_session),
         ]
         await run_cmd(connection, " && ".join(commands))
+    # An existing session without this name can safely accept a new window.
     elif window not in windows:
         commands = [
             (
@@ -212,6 +239,8 @@ async def _spawn_window(connection, session, window, cmd):
         ]
         await run_cmd(connection, " && ".join(commands))
     else:
+        # A name collision is controllable only when ownership is proven. Live
+        # managed windows are rejected; dead managed windows are respawned.
         info = require_managed_window(session, window, windows[window])
         if info["dead"]:
             await run_cmd(
@@ -232,6 +261,7 @@ async def _spawn_window(connection, session, window, cmd):
                 stderr="window {} exists and is not dead".format(window),
             )
 
+    # Window-local defaults are applied after every creation or respawn path.
     await run_cmd(
         connection,
         (
