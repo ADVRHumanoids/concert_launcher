@@ -32,3 +32,11 @@ async def ensure_resources(connection):
     for name in missing:
         logger.info("installing launcher resource %s", name)
         await remote.putfile(connection, resource_path(name), "/tmp")
+
+    # SCP implementations and remote umasks differ. Set deterministic modes so
+    # the wrapper is executable even when the copied source mode is not kept.
+    await remote.run_cmd(
+        connection,
+        "chmod 755 /tmp/concert_launcher_wrapper.bash && "
+        "chmod 644 /tmp/concert_launcher_print_ps_tree.py",
+    )

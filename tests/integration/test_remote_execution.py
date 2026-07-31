@@ -33,6 +33,13 @@ async def test_one_shot_command_executes_on_remote_host(
     try:
         assert await launcher.execute_process(process, notify_event=notify) is True
         assert await remote_a.run(f"cat {marker}") == "remote"
+        assert (
+            await remote_a.run(
+                "test -x /tmp/concert_launcher_wrapper.bash && "
+                "test -r /tmp/concert_launcher_print_ps_tree.py && echo installed"
+            )
+            == "installed"
+        )
         assert not os.path.exists(marker)
         assert any("hello-over-ssh" in message for _, message in messages)
     finally:
