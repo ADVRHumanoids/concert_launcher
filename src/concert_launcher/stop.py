@@ -119,7 +119,7 @@ async def _send_stop_signal(config, process, graceful):
     signal_name = "INT" if use_graceful else "QUIT"
     await config.notify_state("Stopping")
     await config.print("stopping with SIG{}".format(signal_name))
-    await _signal_foreground_process_group(config, process, signal_name)
+    await _send_tmux_signal_key(config, process, signal_name)
 
     attempts = 0
     while await tmux.window_alive(config.ssh, config.session, process):
@@ -128,23 +128,21 @@ async def _send_stop_signal(config, process, graceful):
         if attempts > 5 and use_graceful:
             use_graceful = False
             await config.print("escalating to SIGQUIT")
-            await _signal_foreground_process_group(config, process, "QUIT")
+            await _send_tmux_signal_key(config, process, "QUIT")
 
 
-async def _signal_foreground_process_group(config, process, signal_name):
-    windows = await tmux.list_windows(config.ssh, config.session)
-    info = windows.get(process)
-    if info is None or info.get("dead"):
-        return
+async def _send_tmux_signal_key(config, process, signal_name):
+    """Deliver a terminal signal to the current tmux foreground process.
 
-    pane_pid = int(info["pid"])
-    signal_name = shlex.quote(signal_name)
-    command = (
-        "pane_pid={pid}; "
-        "pgid=$(ps -o tpgid= -p \"$pane_pid\" | tr -d ' '); "
-        "case \"$pgid\" in ''|-*|*[!0-9]*) "
-        "pgid=$(ps -o pgid= -p \"$pane_pid\" | tr -d ' ') ;; esac; "
-        "case \"$pgid\" in ''|0|-*|*[!0-9]*) exit 1 ;; esac; "
-        "/bin/kill -s {signal} -- -\"$pgid\""
-    ).format(pid=pane_pid, signal=signal_name)
+    Looking up a process group from the pane PID is racy: interactive shells
+    move each foreground child into its own group. Sending the corresponding
+    control key through tmux lets the terminal driver target the actual
+    foreground process group, matching an operator pressing Ctrl-C or Ctrl-\\.
+    """
+    key = "C-c" if signal_name == "INT" else "C-\\"
+    target = "{}:{}".format(config.session, process)
+    command = "tmux send-keys -t {} {}".format(
+        shlex.quote(target),
+        shlex.quote(key),
+    )
     await remote.run_cmd(config.ssh, command)
