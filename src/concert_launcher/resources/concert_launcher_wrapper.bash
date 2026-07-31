@@ -1,30 +1,37 @@
 #!/bin/bash
+set -u
 
 NAME=$1
 CMD=$2
-
-if ! command -v ts &> /dev/null
-then
-    echo "ts could not be found"
-else
-    CMD="$CMD 2>&1 | ts '[%H:%M:%.S]'"
-fi
-
 STDOUT_FILE=/tmp/$NAME.stdout
+RUNNER_FILE=/tmp/$NAME.runner.$$.bash
 
-echo "starting process $NAME ($CMD)" >> $STDOUT_FILE
+cleanup() {
+    rm -f "$RUNNER_FILE"
+    rm -f "/tmp/$NAME.STARTING" "/tmp/$NAME.KILLING"
+}
+trap cleanup EXIT
 
-export PYTHONUNBUFFERED=1
+{
+    echo '#!/bin/bash'
+    echo 'set -o pipefail'
+    echo 'export PYTHONUNBUFFERED=1'
+    printf 'CMD=%q\n' "$CMD"
+    cat <<'RUNNER'
+if command -v ts >/dev/null 2>&1; then
+    stdbuf -oL bash -ic "$CMD" 2>&1 | ts '[%H:%M:%.S]'
+else
+    stdbuf -oL bash -ic "$CMD"
+fi
+RUNNER
+} > "$RUNNER_FILE"
+chmod 700 "$RUNNER_FILE"
 
-script --append --flush --return --command "stdbuf -oL bash -ic \"$CMD\"" $STDOUT_FILE
+echo "starting process $NAME ($CMD)" >> "$STDOUT_FILE"
 
+script --append --flush --return --command "$RUNNER_FILE" "$STDOUT_FILE"
 RET=$?
 
-echo "process exited with code $RET" >> $STDOUT_FILE
-
+echo "process exited with code $RET" >> "$STDOUT_FILE"
 sleep 1
-
-rm /tmp/$NAME.STARTING || true
-rm /tmp/$NAME.KILLING || true
-
-exit $RET
+exit "$RET"
