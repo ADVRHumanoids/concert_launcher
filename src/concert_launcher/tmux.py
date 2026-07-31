@@ -4,18 +4,22 @@ import asyncio
 import logging
 import shlex
 
-from .errors import CommandError
+from .errors import CommandError, ProcessError
 from .remote import run_cmd
 
 logger = logging.getLogger(__name__)
+
+MANAGED_OPTION = "@concert_launcher_managed"
+WRAPPER_PATH = "/tmp/concert_launcher_wrapper.bash"
 
 
 async def list_windows(connection, session):
     command = (
         "tmux list-w -t {} -F "
-        "'#{{session_name}}\t#{{window_name}}\t#{{pane_pid}}\t"
-        "#{{pane_dead}}\texit=#{{pane_dead_status}}'"
-    ).format(shlex.quote(session))
+        "'#{{session_name}}\t#{{window_name}}\t#{{window_id}}\t"
+        "#{{pane_pid}}\t#{{pane_dead}}\texit=#{{pane_dead_status}}\t"
+        "managed=#{{{}}}\t#{{pane_start_command}}'"
+    ).format(shlex.quote(session), MANAGED_OPTION)
     returncode, stdout, stderr = await run_cmd(
         connection, command, throw_on_failure=False
     )
@@ -26,38 +30,103 @@ async def list_windows(connection, session):
 
     result = {}
     for line in stdout.splitlines():
-        tokens = [token.strip() for token in line.split("\t")]
-        if len(tokens) != 5 or not tokens[4].startswith("exit="):
+        tokens = [token.strip() for token in line.split("\t", 7)]
+        if (
+            len(tokens) != 8
+            or not tokens[5].startswith("exit=")
+            or not tokens[6].startswith("managed=")
+        ):
             logger.warning("ignoring unexpected tmux row: %r", line)
             continue
-        session_name, window, pid, dead, exit_field = tokens
+
+        (
+            session_name,
+            window,
+            window_id,
+            pid,
+            dead,
+            exit_field,
+            managed_field,
+            start_command,
+        ) = tokens
         if session_name != session:
             continue
+
         is_dead = dead == "1"
         dead_status = exit_field[len("exit="):]
         exitstatus = int(dead_status) if dead_status else (None if is_dead else 0)
-        result[window] = {
+        tagged = managed_field[len("managed="):] == "1"
+        legacy_managed = start_command.startswith(WRAPPER_PATH + " ")
+        managed = tagged or legacy_managed
+        run_pending = False
+        kill_pending = False
+        if managed:
+            run_pending = await _marker_exists(connection, window, ".STARTING")
+            kill_pending = await _marker_exists(connection, window, ".KILLING")
+
+        entry = {
+            "id": window_id,
+            "window_ids": [window_id],
             "pid": int(pid),
             "dead": is_dead,
             "exitstatus": exitstatus,
-            "run_pending": (
-                await run_cmd(
-                    connection,
-                    "test -f /tmp/{}.STARTING".format(window),
-                    throw_on_failure=False,
-                )
-            )[0]
-            == 0,
-            "kill_pending": (
-                await run_cmd(
-                    connection,
-                    "test -f /tmp/{}.KILLING".format(window),
-                    throw_on_failure=False,
-                )
-            )[0]
-            == 0,
+            "managed": managed,
+            "legacy_managed": legacy_managed and not tagged,
+            "ambiguous": False,
+            "run_pending": run_pending,
+            "kill_pending": kill_pending,
         }
+
+        if window in result:
+            previous = result[window]
+            ids = list(previous.get("window_ids", [])) + [window_id]
+            result[window] = {
+                "id": None,
+                "window_ids": ids,
+                "pid": "-",
+                "dead": False,
+                "exitstatus": None,
+                "managed": False,
+                "legacy_managed": False,
+                "ambiguous": True,
+                "run_pending": False,
+                "kill_pending": False,
+            }
+        else:
+            result[window] = entry
     return result
+
+
+async def _marker_exists(connection, window, suffix):
+    path = shlex.quote("/tmp/{}{}".format(window, suffix))
+    return (
+        await run_cmd(
+            connection,
+            "test -f {}".format(path),
+            throw_on_failure=False,
+        )
+    )[0] == 0
+
+
+def window_conflict_message(session, window, info):
+    if info is None:
+        return None
+    target = "{}:{}".format(session, window)
+    if info.get("ambiguous"):
+        return (
+            "ambiguous tmux target {!r}: multiple windows have that name"
+        ).format(target)
+    if not info.get("managed"):
+        return "unmanaged tmux window {!r}".format(target)
+    return None
+
+
+def require_managed_window(session, window, info):
+    """Return a managed window or refuse to control a foreign collision."""
+    message = window_conflict_message(session, window, info)
+    if message is not None:
+        raise ProcessError("refusing to control {}".format(message))
+    return info
 
 
 async def has_window(connection, session, window):
@@ -80,10 +149,11 @@ async def has_window(connection, session, window):
 
 
 async def window_alive(connection, session, window):
-    if not await has_window(connection, session, window):
-        return False
     windows = await list_windows(connection, session)
-    return window in windows and not windows[window]["dead"]
+    info = windows.get(window)
+    if info is None or info.get("ambiguous") or not info.get("managed"):
+        return False
+    return not info["dead"]
 
 
 _spawn_lock_value = None
@@ -109,6 +179,12 @@ async def _spawn_window(connection, session, window, cmd):
     quoted_cmd = shlex.quote(cmd)
     quoted_session = shlex.quote(session)
     quoted_window = shlex.quote(window)
+    target = "{}:{}".format(session, window)
+    quoted_target = shlex.quote(target)
+    tag_command = "tmux set-option -w -t {} {} 1".format(
+        quoted_target,
+        MANAGED_OPTION,
+    )
 
     if not windows:
         commands = [
@@ -116,6 +192,7 @@ async def _spawn_window(connection, session, window, cmd):
                 "tmux new-session -d -s {s} -n {w} "
                 "/tmp/concert_launcher_wrapper.bash {w} {c}"
             ).format(s=quoted_session, w=quoted_window, c=quoted_cmd),
+            tag_command,
             "tmux set -t {} aggressive-resize on".format(quoted_session),
             "tmux set -t {} mouse on".format(quoted_session),
             "tmux set -t {} remain-on-exit on".format(quoted_session),
@@ -128,31 +205,39 @@ async def _spawn_window(connection, session, window, cmd):
                 "tmux new-window -d -a -t {s} -n {w} "
                 "/tmp/concert_launcher_wrapper.bash {w} {c}"
             ).format(s=quoted_session, w=quoted_window, c=quoted_cmd),
-            "tmux set -t {s}:{w} aggressive-resize on".format(
-                s=quoted_session, w=quoted_window
+            tag_command,
+            "tmux set -t {target} aggressive-resize on".format(
+                target=quoted_target
             ),
         ]
         await run_cmd(connection, " && ".join(commands))
-    elif windows[window]["dead"]:
-        await run_cmd(
-            connection,
-            (
-                "tmux respawn-window -t {s}:{w} "
-                "/tmp/concert_launcher_wrapper.bash {w} {c}"
-            ).format(s=quoted_session, w=quoted_window, c=quoted_cmd),
-        )
     else:
-        raise CommandError(
-            "tmux new-window",
-            stderr="window {} exists and is not dead".format(window),
-        )
+        info = require_managed_window(session, window, windows[window])
+        if info["dead"]:
+            await run_cmd(
+                connection,
+                (
+                    "tmux respawn-window -t {target} "
+                    "/tmp/concert_launcher_wrapper.bash {w} {c} && {tag}"
+                ).format(
+                    target=quoted_target,
+                    w=quoted_window,
+                    c=quoted_cmd,
+                    tag=tag_command,
+                ),
+            )
+        else:
+            raise CommandError(
+                "tmux new-window",
+                stderr="window {} exists and is not dead".format(window),
+            )
 
     await run_cmd(
         connection,
         (
-            "tmux set -t {s}:{w} remain-on-exit on && "
-            "tmux set -t {s}:{w} history-limit 10000"
-        ).format(s=quoted_session, w=quoted_window),
+            "tmux set -t {target} remain-on-exit on && "
+            "tmux set -t {target} history-limit 10000"
+        ).format(target=quoted_target),
     )
 
 

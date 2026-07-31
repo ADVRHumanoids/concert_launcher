@@ -61,6 +61,12 @@ async def _execute_one(
     await config.notify_state("Connecting")
     await config.connect()
 
+    if config.persistent:
+        windows = await tmux.list_windows(config.ssh, config.session)
+        existing = windows.get(process)
+        if existing is not None:
+            tmux.require_managed_window(config.session, process, existing)
+
     marker_created = False
     try:
         await remote.run_cmd(config.ssh, "touch /tmp/{}.STARTING".format(process))

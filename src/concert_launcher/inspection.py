@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import shlex
 
 from . import remote, tmux
 from .errors import ProcessError, RemoteConnectionError
@@ -40,6 +41,9 @@ async def status(
                     "dead": True,
                     "pid": "-",
                     "exitstatus": "-",
+                    "managed": False,
+                    "legacy_managed": False,
+                    "ambiguous": False,
                     "run_pending": False,
                     "kill_pending": False,
                     "state": "UNAVAILABLE",
@@ -57,18 +61,26 @@ async def status(
                     "dead": True,
                     "pid": "-",
                     "exitstatus": "-",
+                    "managed": False,
+                    "legacy_managed": False,
+                    "ambiguous": False,
                     "run_pending": False,
                     "kill_pending": False,
                 }
                 state = "STOPPED"
-            elif entry.get("run_pending"):
-                state = "STARTING"
-            elif entry.get("kill_pending"):
-                state = "STOPPING"
-            elif entry.get("dead"):
-                state = "DEAD"
             else:
-                state = "RUNNING"
+                conflict = tmux.window_conflict_message(session, name, entry)
+                if conflict is not None:
+                    state = "CONFLICT"
+                    entry["error"] = conflict
+                elif entry.get("run_pending"):
+                    state = "STARTING"
+                elif entry.get("kill_pending"):
+                    state = "STOPPING"
+                elif entry.get("dead"):
+                    state = "DEAD"
+                else:
+                    state = "RUNNING"
             entry["state"] = state
             entry["machine"] = machine or "local"
             result.setdefault(session, {})[name] = entry
@@ -101,7 +113,10 @@ async def pstree(launcher, process=None):
             await config.connect(announce=False)
             windows = await tmux.list_windows(config.ssh, config.session)
             info = windows.get(name)
-            if not info or info.get("dead"):
+            if not info:
+                continue
+            tmux.require_managed_window(config.session, name, info)
+            if info.get("dead"):
                 continue
             _, stdout, _ = await remote.run_cmd(
                 config.ssh,
@@ -143,11 +158,18 @@ async def watch(
         config = launcher.process(name, level=0)
         try:
             await config.connect(announce=False)
+            windows = await tmux.list_windows(config.ssh, config.session)
+            info = windows.get(name)
+            if info is not None:
+                tmux.require_managed_window(config.session, name, info)
         except RemoteConnectionError as exc:
             await launcher.connection_manager.invalidate(exc.machine)
             raise
-        command = "touch /tmp/{0}.stdout && tail -f -n {1} /tmp/{0}.stdout".format(
-            name, num_lines
+        output_path = shlex.quote("/tmp/{}.stdout".format(name))
+        tail_position = shlex.quote(str(num_lines))
+        command = "touch {path} && tail -f -n {lines} {path}".format(
+            path=output_path,
+            lines=tail_position,
         )
         tasks.append(
             remote.watch_process(
@@ -167,6 +189,10 @@ async def wait_process(launcher, process, timeout=0, watch_output=True):
     config = launcher.process(process, level=0)
     try:
         await config.connect(announce=False)
+        initial_windows = await tmux.list_windows(config.ssh, config.session)
+        initial_info = initial_windows.get(process)
+        if initial_info is not None:
+            tmux.require_managed_window(config.session, process, initial_info)
     except RemoteConnectionError as exc:
         await launcher.connection_manager.invalidate(exc.machine)
         raise
@@ -183,6 +209,7 @@ async def wait_process(launcher, process, timeout=0, watch_output=True):
             info = windows.get(process)
             if info is None:
                 raise ProcessError("process {!r} is not running".format(process))
+            tmux.require_managed_window(config.session, process, info)
             if info["dead"]:
                 if info["exitstatus"] is None:
                     await asyncio.sleep(0.05)
