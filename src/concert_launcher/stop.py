@@ -1,4 +1,9 @@
-"""Stop process dependency graphs."""
+"""Stop dependency graphs without touching foreign tmux windows.
+
+Dependants stop before their dependencies, persistent processes receive
+terminal-native signals through tmux, and connection failures invalidate the
+shared SSH cache before propagating to callers.
+"""
 
 import asyncio
 import logging
@@ -17,8 +22,11 @@ async def kill(
     graceful=True,
     notify_event=None,
 ):
+    """Stop one graph root, or every configured process when omitted."""
     registry = TaskRegistry()
 
+    # Reverse graph traversal mirrors startup: cycles are explicit and shared
+    # nodes are stopped once even when multiple dependants reach them.
     async def schedule(name, level, stack):
         if name in stack:
             cycle = " -> ".join(stack + (name,))
@@ -38,6 +46,8 @@ async def kill(
 
     try:
         if process is None:
+            # Preserve configuration order for predictable top-level output;
+            # TaskRegistry still deduplicates recursive dependant traversal.
             names = [name for name in launcher.cfg if name != "context"]
             results = []
             for name in names:
@@ -58,9 +68,11 @@ async def _kill_one(
     stack,
     schedule,
 ):
+    """Stop one node after all persistent dependants have stopped."""
     config = launcher.process(process, level=level, notify_event=notify_event)
     await config.connect()
 
+    # Refuse a foreign same-name window before writing markers or signals.
     if config.persistent:
         windows = await tmux.list_windows(config.ssh, config.session)
         existing = windows.get(process)
@@ -69,9 +81,13 @@ async def _kill_one(
 
     marker_created = False
     try:
+        # Status exposes STOPPING while this operation is in progress. Cleanup
+        # is best-effort in ``finally`` so failures do not leave stale state.
         await remote.run_cmd(config.ssh, "touch /tmp/{}.KILLING".format(process))
         marker_created = True
 
+        # A dependency cannot be stopped while a configured persistent
+        # dependant still relies on it, so dependants are handled first.
         dependants = _dependants(launcher.cfg, process)
         if dependants:
             await config.print("stopping dependants: {}".format(", ".join(dependants)))
@@ -79,6 +95,8 @@ async def _kill_one(
                 *[schedule(name, level + 1, stack) for name in dependants]
             )
 
+        # One-shot nodes have no tmux process of their own. Their dependencies
+        # still participate in graph-wide shutdown.
         if not config.persistent:
             if config.deps:
                 await config.print("stopping dependencies")
@@ -87,6 +105,8 @@ async def _kill_one(
                 )
             return True
 
+        # Re-read tmux after dependant shutdown because the target may have
+        # changed state while recursive work was running.
         windows = await tmux.list_windows(config.ssh, config.session)
         info = windows.get(process)
         if info is None:
@@ -113,6 +133,7 @@ async def _kill_one(
 
 
 def _dependants(cfg, process):
+    """Return persistent processes which directly depend on ``process``."""
     result = []
     for name, field in cfg.items():
         if name in ("context", process):
@@ -124,6 +145,7 @@ def _dependants(cfg, process):
 
 
 async def _send_stop_signal(config, process, graceful):
+    """Send SIGINT first, then escalate to SIGQUIT after five seconds."""
     use_graceful = graceful and not config.force_sigquit
     signal_name = "INT" if use_graceful else "QUIT"
     await config.notify_state("Stopping")
@@ -141,7 +163,11 @@ async def _send_stop_signal(config, process, graceful):
 
 
 async def _send_tmux_signal_key(config, process, signal_name):
-    """Deliver a terminal signal to the current tmux foreground process."""
+    """Deliver a terminal signal to the current tmux foreground process.
+
+    Sending Ctrl-C or Ctrl-\\ through tmux lets the terminal driver target the
+    actual foreground process group, including commands launched by a shell.
+    """
     key = "C-c" if signal_name == "INT" else "C-\\"
     target = "{}:{}".format(config.session, process)
     command = "tmux send-keys -t {} {}".format(

@@ -1,4 +1,9 @@
-"""Status, process-tree, output watching, and waiting."""
+"""Inspect managed processes through status, trees, output, and exit waits.
+
+All operations enforce tmux ownership before observing or following a named
+window. Remote failures invalidate cached connections so callers can recover
+without accidentally reusing a broken transport.
+"""
 
 import asyncio
 import contextlib
@@ -14,9 +19,13 @@ async def status(
     print_to_stdout=False,
     raise_on_unavailable=True,
 ):
+    """Return normalized lifecycle state for configured processes."""
     names = [process] if process is not None else [
         name for name in launcher.cfg if name != "context"
     ]
+
+    # Build each process view once, then group by transport and tmux session so
+    # one SSH/tmux query can serve every process in that group.
     configs = {
         name: launcher.process(name, level=0)
         for name in names
@@ -33,6 +42,8 @@ async def status(
             await config.connect(announce=False)
             windows = await tmux.list_windows(config.ssh, session)
         except RemoteConnectionError as exc:
+            # Dashboard mode keeps other hosts visible; strict library mode
+            # re-raises the typed error after removing the stale connection.
             await launcher.connection_manager.invalidate(exc.machine)
             if raise_on_unavailable:
                 raise
@@ -54,6 +65,8 @@ async def status(
                 rows.append(_row(name, session, entry))
             continue
 
+        # Convert raw tmux facts into the public launcher states. Foreign or
+        # ambiguous name collisions are surfaced as CONFLICT, never RUNNING.
         for name in group_names:
             entry = dict(windows.get(name, {}))
             if not entry:
@@ -92,6 +105,7 @@ async def status(
 
 
 def _row(process, session, entry):
+    """Project a detailed status entry into one terminal-table row."""
     return {
         "process": process,
         "session": session,
@@ -103,6 +117,7 @@ def _row(process, session, entry):
 
 
 async def pstree(launcher, process=None):
+    """Return process trees for live, launcher-managed tmux windows."""
     names = [process] if process is not None else [
         name for name in launcher.cfg if name != "context"
     ]
@@ -118,6 +133,9 @@ async def pstree(launcher, process=None):
             tmux.require_managed_window(config.session, name, info)
             if info.get("dead"):
                 continue
+
+            # The target-side helper walks descendants from the pane PID and
+            # returns text suitable for both APIs and terminal output.
             _, stdout, _ = await remote.run_cmd(
                 config.ssh,
                 "python3 /tmp/concert_launcher_print_ps_tree.py {}".format(
@@ -133,6 +151,8 @@ async def pstree(launcher, process=None):
 
 
 class Printer:
+    """Default line printer used when a library caller supplies no callback."""
+
     def __init__(self, process):
         self.process = process
 
@@ -150,6 +170,7 @@ async def watch(
     printer_coro_factory=default_get_printer,
     num_lines="+1",
 ):
+    """Follow output files for one or all configured processes."""
     names = [process] if process is not None else [
         name for name in launcher.cfg if name != "context"
     ]
@@ -165,6 +186,9 @@ async def watch(
         except RemoteConnectionError as exc:
             await launcher.connection_manager.invalidate(exc.machine)
             raise
+
+        # Each process gets one independent ``tail -f`` stream. Quoting keeps
+        # process names and caller-provided tail positions shell-safe.
         output_path = shlex.quote("/tmp/{}.stdout".format(name))
         tail_position = shlex.quote(str(num_lines))
         command = "touch {path} && tail -f -n {lines} {path}".format(
@@ -179,6 +203,8 @@ async def watch(
             )
         )
     try:
+        # A failure in any stream ends the combined watch and exposes the
+        # affected machine through RemoteConnectionError.
         await asyncio.gather(*tasks)
     except RemoteConnectionError as exc:
         await launcher.connection_manager.invalidate(exc.machine)
@@ -186,8 +212,11 @@ async def watch(
 
 
 async def wait_process(launcher, process, timeout=0, watch_output=True):
+    """Wait for one managed tmux window and return its real exit status."""
     config = launcher.process(process, level=0)
     try:
+        # Validate ownership before starting an optional watch task, preventing
+        # output operations from attaching to a foreign same-name window.
         await config.connect(announce=False)
         initial_windows = await tmux.list_windows(config.ssh, config.session)
         initial_info = initial_windows.get(process)
@@ -204,6 +233,8 @@ async def wait_process(launcher, process, timeout=0, watch_output=True):
         )
 
     async def poll():
+        # Tmux may briefly report a dead pane before populating its exit status,
+        # so that state is polled at a shorter interval until complete.
         while True:
             windows = await tmux.list_windows(config.ssh, config.session)
             info = windows.get(process)
@@ -225,6 +256,8 @@ async def wait_process(launcher, process, timeout=0, watch_output=True):
         await launcher.connection_manager.invalidate(exc.machine)
         raise
     finally:
+        # Watching is ancillary to waiting. Always cancel it without masking the
+        # process result or the exception raised by the polling path.
         if watch_task is not None:
             watch_task.cancel()
             with contextlib.suppress(asyncio.CancelledError, Exception):

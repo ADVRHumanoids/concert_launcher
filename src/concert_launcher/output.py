@@ -1,9 +1,14 @@
-"""Human-friendly terminal formatting with no mandatory UI dependency."""
+"""Render readable events and status tables without a UI dependency.
+
+The reporter keeps formatting decisions outside lifecycle code, supports plain
+streams for libraries and tests, and enables ANSI styling only for terminals.
+"""
 
 import functools
 import sys
 
 
+# A deliberately small palette keeps output predictable across terminals.
 _ANSI = {
     "reset": "\033[0m",
     "bold": "\033[1m",
@@ -23,6 +28,7 @@ class ConsoleReporter:
         self.color = self.stream.isatty() if color is None else bool(color)
 
     def _style(self, text, *styles):
+        """Apply ANSI styles only when color output is enabled."""
         if not self.color:
             return text
         prefix = "".join(_ANSI[style] for style in styles)
@@ -30,6 +36,7 @@ class ConsoleReporter:
 
     @staticmethod
     def _event_style(text):
+        """Map common lifecycle words to a marker and semantic color."""
         lowered = text.lower()
         if any(token in lowered for token in ("failed", "error", "unavailable")):
             return "✗", "red"
@@ -40,6 +47,7 @@ class ConsoleReporter:
         return "•", "cyan"
 
     def event(self, process, level, text):
+        """Render one graph-aware lifecycle event."""
         marker, style = self._event_style(text)
         branch = "  " * level + ("└─ " if level else "")
         label = self._style("[{}]".format(process), "bold")
@@ -47,7 +55,11 @@ class ConsoleReporter:
         print("{}{} {} {}".format(branch, marker, label, text), file=self.stream)
 
     def status_table(self, rows):
+        """Normalize rows, calculate widths, and render an aligned table."""
         headers = ("PROCESS", "SESSION", "MACHINE", "STATE", "PID", "EXIT")
+
+        # Convert every field once so width calculation and rendering share the
+        # exact same values.
         normalized = []
         for row in rows:
             normalized.append(tuple(str(row.get(key, "-")) for key in (
@@ -63,6 +75,9 @@ class ConsoleReporter:
 
         print(self._style(format_row(headers), "bold", "cyan"), file=self.stream)
         print(self._style("  ".join("-" * width for width in widths), "dim"), file=self.stream)
+
+        # Color the full row by state so the table remains legible even when a
+        # terminal does not align colored substrings consistently.
         for row in normalized:
             rendered = format_row(row)
             state = row[3]
@@ -75,6 +90,7 @@ class ConsoleReporter:
             print(rendered, file=self.stream)
 
 
+# Historical printing calls delegate to one default reporter.
 _default_reporter = ConsoleReporter()
 
 
