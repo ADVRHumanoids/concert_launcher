@@ -151,7 +151,7 @@ async def pstree(launcher, process=None):
 
 
 class Printer:
-    """Default line printer used when a library caller supplies no callback."""
+    """Backward-compatible plain printer for direct inspection imports."""
 
     def __init__(self, process):
         self.process = process
@@ -161,19 +161,26 @@ class Printer:
 
 
 def default_get_printer(process):
+    """Return the historical ANSI-free watch printer."""
     return Printer(process).print
 
 
 async def watch(
     launcher,
     process=None,
-    printer_coro_factory=default_get_printer,
+    printer_coro_factory=None,
     num_lines="+1",
 ):
     """Follow output files for one or all configured processes."""
     names = [process] if process is not None else [
         name for name in launcher.cfg if name != "context"
     ]
+    # The launcher owns output policy. API launchers use a plain reporter,
+    # while the CLI injects a colored one. Explicit callbacks still win.
+    printer_factory = printer_coro_factory or getattr(
+        launcher.reporter, "watch_printer", default_get_printer
+    )
+
     tasks = []
     for name in names:
         config = launcher.process(name, level=0)
@@ -199,7 +206,7 @@ async def watch(
             remote.watch_process(
                 config.ssh,
                 command,
-                stdout_coro=printer_coro_factory(name),
+                stdout_coro=printer_factory(name),
             )
         )
     try:

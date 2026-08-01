@@ -16,6 +16,17 @@ from .cli import (
 )
 from .errors import LauncherError, RemoteConnectionError
 from .launcher import Launcher
+from .output import ConsoleReporter
+
+
+def _cli_color_enabled(stream):
+    """Enable ANSI output only for an interactive CLI terminal."""
+    is_tty = getattr(stream, "isatty", lambda: False)()
+    return (
+        is_tty
+        and "NO_COLOR" not in os.environ
+        and os.environ.get("TERM", "") != "dumb"
+    )
 
 
 async def do_main(argv=None):
@@ -25,7 +36,13 @@ async def do_main(argv=None):
 
     logging.basicConfig(level=getattr(logging, args.log_level.upper()))
     config = load_config(os.path.abspath(args.config) if args.config else None)
-    launcher = Launcher(config)
+    launcher = Launcher(
+        config,
+        reporter=ConsoleReporter(
+            stream=sys.stdout,
+            color=_cli_color_enabled(sys.stdout),
+        ),
+    )
     session = config["context"]["session"]
 
     def spawn_monitor():
