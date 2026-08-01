@@ -121,7 +121,7 @@ class ConfigParser:
                 await result
 
     def parse_cmd(self, user_params=None, user_variants=None):
-        """Apply context parameters, selected variants, and Docker wrapping."""
+        """Apply parameters and variants to commands and readiness checks."""
         # User parameters override context defaults; selected variants may then
         # add parameters or replace/wrap the base command.
         params = dict(self.cfg["context"].get("params", {}))
@@ -145,10 +145,13 @@ class ConfigParser:
                 command = replacement.replace("{cmd}", command)
             params.update(variant.params[choice])
 
-        # Formatting happens after all overrides so missing values identify the
-        # final command the user actually requested.
+        # Command and readiness templates share the same final parameter set so
+        # a readiness probe checks the exact variant the launcher started.
+        ready_check = self.pfield.get("ready_check")
         try:
             command = command.format(**params)
+            if ready_check is not None:
+                ready_check = ready_check.format(**params)
         except KeyError as exc:
             raise ConfigurationError(
                 "missing parameter {} for process {!r}".format(exc, self.name)
@@ -161,11 +164,12 @@ class ConfigParser:
             command = 'docker exec -it {} bash -ic \\"{}\\"'.format(
                 self.docker, command
             )
-            if self.ready_check is not None:
-                self.ready_check = 'docker exec -it {} bash -ic "{}"'.format(
-                    self.docker, self.ready_check
+            if ready_check is not None:
+                ready_check = 'docker exec -it {} bash -ic "{}"'.format(
+                    self.docker, ready_check
                 )
         self.cmd = command
+        self.ready_check = ready_check
         return command
 
     async def connect(self, announce=True):
