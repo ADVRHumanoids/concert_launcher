@@ -1,0 +1,61 @@
+services:
+  # Real OpenSSH/tmux targets. These reuse the same images as integration tests.
+  ssh-a:
+    build:
+      context: ../..
+      dockerfile: tests/integration/ssh-host/Dockerfile
+    hostname: ssh-a
+    volumes:
+      - ./.state:/test-keys:ro
+
+  ssh-b:
+    build:
+      context: ../..
+      dockerfile: tests/integration/ssh-host/Dockerfile
+    hostname: ssh-b
+    volumes:
+      - ./.state:/test-keys:ro
+
+  # Proxies let recovery_demo.py interrupt SSH without killing target processes.
+  ssh-proxy-a:
+    build:
+      context: ../..
+      dockerfile: tests/integration/ssh-proxy/Dockerfile
+    environment:
+      TARGET_HOST: ssh-a
+      TARGET_PORT: "22"
+    depends_on:
+      ssh-a:
+        condition: service_healthy
+
+  ssh-proxy-b:
+    build:
+      context: ../..
+      dockerfile: tests/integration/ssh-proxy/Dockerfile
+    environment:
+      TARGET_HOST: ssh-b
+      TARGET_PORT: "22"
+    depends_on:
+      ssh-b:
+        condition: service_healthy
+
+  # The runner contains Concert Launcher, the examples, and an SSH client.
+  runner:
+    build:
+      context: ../..
+      dockerfile: tests/integration/runner/Dockerfile
+    working_dir: /workspace/examples/docker
+    environment:
+      CONCERT_TEST_PROXY_A: http://ssh-proxy-a:8474
+      CONCERT_TEST_PROXY_B: http://ssh-proxy-b:8474
+    volumes:
+      - ./.state:/test-keys:ro
+    depends_on:
+      ssh-a:
+        condition: service_healthy
+      ssh-b:
+        condition: service_healthy
+      ssh-proxy-a:
+        condition: service_healthy
+      ssh-proxy-b:
+        condition: service_healthy

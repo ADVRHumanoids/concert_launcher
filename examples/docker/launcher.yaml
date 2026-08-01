@@ -1,0 +1,48 @@
+# Global settings shared by every process unless a process overrides them.
+context:
+  # Tmux session used to keep persistent processes alive after SSH disconnects.
+  session: concert_examples
+
+  # Parameters are substituted into cmd, ready_check, and variant commands.
+  # CLI --params and Launcher.execute_process(params=...) override these values.
+  params:
+    port: 47001
+    probe_message: dependency-ready
+
+# A persistent service on Docker host A.
+web:
+  machine: tester@ssh-proxy-a
+  cmd: python3 -m http.server {port} --bind 0.0.0.0
+
+  # Dependencies wait until this command succeeds on the same target machine.
+  ready_check: nc -z -w 1 127.0.0.1 {port}
+
+# Two long-running processes make multi-process watch colors easy to see.
+heartbeat_a:
+  machine: tester@ssh-proxy-a
+  cmd: python3 /usr/local/bin/concert-heartbeat
+
+heartbeat_b:
+  machine: tester@ssh-proxy-b
+  cmd: python3 /usr/local/bin/concert-heartbeat
+
+# A one-shot process on host B. It starts web first, waits for web readiness,
+# then verifies that host B can reach host A through the Compose network.
+http_probe:
+  machine: tester@ssh-proxy-b
+  persistent: false
+  depends: [web]
+  cmd: >-
+    nc -z -w 2 ssh-a {port}
+    && printf '{probe_message}\n'
+
+  # A variant group allows at most one listed choice per execution.
+  variants:
+    output:
+      - concise:
+          params:
+            probe_message: dependency-ready
+      - verbose:
+          cmd: >-
+            {cmd}
+            && printf 'source=ssh-b target=ssh-a port={port}\n'

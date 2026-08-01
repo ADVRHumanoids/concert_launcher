@@ -21,6 +21,19 @@ pip install -e .
 Both local and remote target machines need `tmux`. SSH authentication is handled
 by AsyncSSH and normally uses the same keys and agent as OpenSSH.
 
+## Runnable examples
+
+[`examples/docker`](examples/docker) provides a two-host Docker laboratory based
+on the integration-test architecture. It includes an annotated configuration,
+a colored CLI walkthrough, an ANSI-free asyncio API example, and an SSH recovery
+example using controllable proxies.
+
+```bash
+./examples/docker/run.sh cli
+./examples/docker/run.sh api
+./examples/docker/run.sh recovery
+```
+
 ## Configuration
 
 ```yaml

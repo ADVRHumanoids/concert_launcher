@@ -8,3 +8,4 @@ dist
 .venv
 venv
 tests/integration/.state
+examples/docker/.state
