@@ -16,17 +16,7 @@ from .cli import (
 )
 from .errors import LauncherError, RemoteConnectionError
 from .launcher import Launcher
-from .output import ConsoleReporter
-
-
-def _cli_color_enabled(stream):
-    """Enable ANSI output only for an interactive CLI terminal."""
-    is_tty = getattr(stream, "isatty", lambda: False)()
-    return (
-        is_tty
-        and "NO_COLOR" not in os.environ
-        and os.environ.get("TERM", "") != "dumb"
-    )
+from .output import ConsoleReporter, cli_color_enabled
 
 
 async def do_main(argv=None):
@@ -40,7 +30,7 @@ async def do_main(argv=None):
         config,
         reporter=ConsoleReporter(
             stream=sys.stdout,
-            color=_cli_color_enabled(sys.stdout),
+            color=cli_color_enabled(sys.stdout),
         ),
     )
     session = config["context"]["session"]

@@ -6,6 +6,7 @@ compatible terminal.
 """
 
 import functools
+import os
 import sys
 import zlib
 
@@ -57,12 +58,23 @@ _STATE_STYLES = {
 }
 
 
+def cli_color_enabled(stream, environ=None):
+    """Return whether CLI output should use ANSI styling."""
+    environment = os.environ if environ is None else environ
+    is_tty = getattr(stream, "isatty", lambda: False)()
+    return (
+        is_tty
+        and "NO_COLOR" not in environment
+        and environment.get("TERM", "") != "dumb"
+    )
+
+
 class ConsoleReporter:
     """Render process output consistently for plain or colored streams."""
 
     def __init__(self, stream=None, color=False):
         self.stream = stream or sys.stdout
-        # Color is opt-in. This keeps the reusable API ANSI-free.
+        # Color is opt-in. This keeps the reusable API ASCII/ANSI-free.
         self.color = bool(color)
 
     def _style(self, text, *styles):
