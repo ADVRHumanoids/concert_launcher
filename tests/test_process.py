@@ -8,6 +8,7 @@ CONFIG = {
     "context": {"session": "robot", "params": {"robot": "kyon"}},
     "controller": {
         "cmd": "controller --robot {robot}",
+        "ready_check": "check-controller --robot {robot}",
         "variants": {
             "debug": {"cmd": "{cmd} --verbose"},
             "mode": [
@@ -29,6 +30,14 @@ class ProcessConfigTests(unittest.TestCase):
         self.assertEqual(
             command,
             "controller --robot centauro --verbose --torque",
+        )
+
+    def test_ready_check_uses_the_same_resolved_parameters(self):
+        config = ConfigParser("controller", CONFIG)
+        config.parse_cmd(user_variants=["position"])
+        self.assertEqual(
+            config.ready_check,
+            "check-controller --robot position_robot",
         )
 
     def test_rejects_multiple_choices_from_same_variant_group(self):
