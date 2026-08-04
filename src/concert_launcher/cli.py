@@ -10,11 +10,13 @@ from .errors import ConfigurationError
 
 
 def default_config_path():
+    configured = os.environ.get("CONCERT_LAUNCHER_DEFAULT_CONFIG")
+    if configured:
+        return os.path.abspath(configured)
     local_path = os.path.abspath("launcher.yaml")
     if os.path.exists(local_path):
         return local_path
-    configured = os.environ.get("CONCERT_LAUNCHER_DEFAULT_CONFIG")
-    return os.path.abspath(configured) if configured else None
+    return None
 
 
 def load_config(path):
