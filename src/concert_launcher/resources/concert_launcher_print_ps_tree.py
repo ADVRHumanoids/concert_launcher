@@ -1,45 +1,42 @@
-import psutil
-import sys 
 import os
-import time
+import sys
 
-process_dict = {}
+import psutil
 
-def get_process_info(pid):
-    
-    if pid not in process_dict.keys():
-        process_dict[pid] = psutil.Process(pid)
-    
-    process = process_dict[pid]
-    
+
+def process_label(process):
     try:
-        ppid = process.ppid()
         cmdline = process.cmdline()
-        cmdline[0] = os.path.basename(cmdline[0])
-        cpu_usage = process.cpu_percent()
-        ram_usage = process.memory_info().rss / (1024 * 1024)  # Convert to MB
-        return ppid, cmdline, cpu_usage, ram_usage
-    except psutil.NoSuchProcess as e:
+        name = os.path.basename(cmdline[0]) if cmdline else process.name()
+        detail = " ".join(cmdline[1:3])
+        memory = process.memory_info().rss / (1024 * 1024)
+    except (psutil.AccessDenied, psutil.NoSuchProcess, psutil.ZombieProcess):
         return None
 
-def process_tree_info(pid, level=0, print_to_screen=False):
+    suffix = " {} ...".format(detail) if detail else ""
+    return "PID: {} ({}{}) RAM: {:.2f} MB".format(
+        process.pid,
+        name,
+        suffix,
+        memory,
+    )
 
-    min_level = 2
 
-    info = get_process_info(pid)
-    
-    if info is not None:
-        
-        ppid, cmdline, cpu_usage, ram_usage = info
-        
-        if print_to_screen and level >= min_level:
-            print(f"{' ' * ((level-min_level) * 2)}PID: {pid} ({' '.join(cmdline[:2])} ...)  CPU: {cpu_usage}  RAM: {ram_usage:.2f} MB")
+def print_tree(process, level=0):
+    label = process_label(process)
+    if label is None:
+        return
+    print("{}{}".format("  " * level, label))
 
-        for child in psutil.Process(pid).children():
-            process_tree_info(child.pid, level + 1, print_to_screen=print_to_screen)
+    try:
+        children = process.children()
+    except (psutil.AccessDenied, psutil.NoSuchProcess, psutil.ZombieProcess):
+        return
 
-# Replace 'your_pid_here' with the actual PID you want to start the tree from
-starting_pid = int(sys.argv[1])
-process_tree_info(starting_pid)
-time.sleep(0.2)
-process_tree_info(starting_pid, print_to_screen=True)
+    for child in children:
+        print_tree(child, level + 1)
+
+
+if __name__ == "__main__":
+    root = psutil.Process(int(sys.argv[1]))
+    print_tree(root)
