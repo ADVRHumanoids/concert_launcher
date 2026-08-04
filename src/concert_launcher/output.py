@@ -36,12 +36,10 @@ _PROCESS_STYLES = (
     "magenta",
     "blue",
     "green",
-    "yellow",
     "bright_cyan",
     "bright_magenta",
     "bright_blue",
     "bright_green",
-    "bright_yellow",
 )
 
 # State colors are intentionally distinct so a status table can be scanned
@@ -76,6 +74,8 @@ class ConsoleReporter:
         self.stream = stream or sys.stdout
         # Color is opt-in. This keeps the reusable API ASCII/ANSI-free.
         self.color = bool(color)
+        self._process_style_cache = {}
+        self._assigned_process_styles = {}
 
     def _style(self, text, *styles):
         """Apply ANSI styles only when color output is enabled."""
@@ -96,11 +96,26 @@ class ConsoleReporter:
             return "…", "yellow"
         return "•", "cyan"
 
-    @staticmethod
-    def process_style(process):
-        """Return a deterministic palette entry for a process name."""
-        checksum = zlib.crc32(str(process).encode("utf-8"))
-        return _PROCESS_STYLES[checksum % len(_PROCESS_STYLES)]
+    def process_style(self, process):
+        """Return a stable process color, avoiding collisions while possible."""
+        process = str(process)
+        cached = self._process_style_cache.get(process)
+        if cached is not None:
+            return cached
+
+        checksum = zlib.crc32(process.encode("utf-8"))
+        start = checksum % len(_PROCESS_STYLES)
+        for offset in range(len(_PROCESS_STYLES)):
+            style = _PROCESS_STYLES[(start + offset) % len(_PROCESS_STYLES)]
+            owner = self._assigned_process_styles.get(style)
+            if owner in (None, process):
+                self._process_style_cache[process] = style
+                self._assigned_process_styles[style] = process
+                return style
+
+        style = _PROCESS_STYLES[start]
+        self._process_style_cache[process] = style
+        return style
 
     def process_label(self, process):
         """Render one stable, colored process label."""
@@ -125,6 +140,17 @@ class ConsoleReporter:
             print("{} {}".format(label, line), end="", file=self.stream)
 
         return print_line
+
+    def refresh_header(self, text, redraw=False):
+        """Render a watch refresh header, optionally redrawing from the top."""
+        if redraw and getattr(self.stream, "isatty", lambda: False)():
+            print("\033[H", end="", file=self.stream)
+        print(self._style(text, "bold", "cyan"), file=self.stream)
+
+    def refresh_footer(self, redraw=False):
+        """Clear stale lines below the current redraw."""
+        if redraw and getattr(self.stream, "isatty", lambda: False)():
+            print("\033[J", end="", file=self.stream)
 
     def status_table(self, rows):
         """Render aligned rows with process and lifecycle-state coloring."""
