@@ -13,6 +13,12 @@ from . import remote, tmux
 from .errors import ProcessError, RemoteConnectionError
 
 
+# Shells conventionally report signal termination as 128 + signal number.
+# SIGINT, SIGQUIT, and SIGTERM are normal operator-requested shutdown paths,
+# so status presents them as stopped while retaining the raw exit status.
+STOPPED_EXIT_STATUSES = {0, 130, 131, 143}
+
+
 def _tail_follow_command(path, num_lines):
     """Follow a log file, using low-latency GNU tail polling when available."""
     output_path = shlex.quote(path)
@@ -105,7 +111,11 @@ async def status(
                 elif entry.get("kill_pending"):
                     state = "STOPPING"
                 elif entry.get("dead"):
-                    state = "STOPPED" if entry.get("exitstatus") == 0 else "DEAD"
+                    state = (
+                        "STOPPED"
+                        if entry.get("exitstatus") in STOPPED_EXIT_STATUSES
+                        else "DEAD"
+                    )
                 else:
                     state = "RUNNING"
             entry["state"] = state
