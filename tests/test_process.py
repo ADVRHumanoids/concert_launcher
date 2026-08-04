@@ -40,6 +40,44 @@ class ProcessConfigTests(unittest.TestCase):
             "check-controller --robot position_robot",
         )
 
+    def test_docker_command_and_readiness_check_are_shell_quoted(self):
+        config_data = {
+            "context": {"session": "robot"},
+            "lidar": {
+                "cmd": (
+                    "ros2 run hesai_ros_driver hesai_ros_driver_node "
+                    "--ros-args -p config_path:=/tmp/lidar.yaml"
+                ),
+                "ready_check": "timeout 5 ros2 topic echo /lidar_points --once",
+                "docker": "kyon-noble-ros2-dev-1",
+            },
+        }
+
+        config = ConfigParser("lidar", config_data)
+        self.assertEqual(
+            config.parse_cmd(),
+            "docker exec -it kyon-noble-ros2-dev-1 bash -ic "
+            "'ros2 run hesai_ros_driver hesai_ros_driver_node --ros-args -p "
+            "config_path:=/tmp/lidar.yaml'",
+        )
+        self.assertEqual(
+            config.ready_check,
+            "docker exec -it kyon-noble-ros2-dev-1 bash -ic "
+            "'timeout 5 ros2 topic echo /lidar_points --once'",
+        )
+
+    def test_docker_quoting_preserves_shell_syntax_in_the_inner_command(self):
+        config_data = {
+            "context": {"session": "robot"},
+            "example": {"cmd": 'echo "$HOME"', "docker": "container"},
+        }
+
+        command = ConfigParser("example", config_data).parse_cmd()
+        self.assertEqual(
+            command,
+            "docker exec -it container bash -ic 'echo \"$HOME\"'",
+        )
+
     def test_rejects_multiple_choices_from_same_variant_group(self):
         config = ConfigParser("controller", CONFIG)
         with self.assertRaises(ConfigurationError):

@@ -159,12 +159,15 @@ async def _wait_until_ready(config, process):
     while True:
         started = time.monotonic()
         await config.print("checking readiness")
-        returncode, _, _ = await remote.run_cmd(
+        returncode, _stdout, _stderr = await remote.run_cmd(
             config.ssh,
             config.ready_check,
             interactive=False,
             throw_on_failure=False,
         )
+        logger.info("readiness check returned {}".format(returncode))
+        logger.info("readiness check stdout: {}".format(_stdout))
+        logger.info("readiness check stderr: {}".format(_stderr))
         if not await tmux.window_alive(config.ssh, config.session, process):
             raise ProcessError(
                 "process {}:{} exited before becoming ready".format(

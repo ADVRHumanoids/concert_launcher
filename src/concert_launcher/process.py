@@ -7,6 +7,7 @@ starts operating on the process.
 
 import inspect
 import logging
+import shlex
 
 from .connections import default_connection_manager
 from .errors import ConfigurationError
@@ -157,16 +158,17 @@ class ConfigParser:
                 "missing parameter {} for process {!r}".format(exc, self.name)
             ) from exc
 
-        # Preserve the historical shell-escaping contract before optionally
-        # nesting the command and readiness check inside Docker.
-        command = command.replace("$", "\\$").replace('"', '\\"')
+        # Commands are passed verbatim to the wrapper's shell.  Docker adds a
+        # second shell boundary, so quote its command argument as one unit.
+        # Escaping quotes by hand here turns them into literal characters when
+        # the wrapper evaluates the command and leaves ``bash -ic`` unmatched.
         if self.docker is not None:
-            command = 'docker exec -it {} bash -ic \\"{}\\"'.format(
-                self.docker, command
+            command = "docker exec -it {} bash -ic {}".format(
+                shlex.quote(self.docker), shlex.quote(command)
             )
             if ready_check is not None:
-                ready_check = 'docker exec -it {} bash -ic "{}"'.format(
-                    self.docker, ready_check
+                ready_check = "docker exec -i {} bash -ic {}".format(
+                    shlex.quote(self.docker), shlex.quote(ready_check)
                 )
         self.cmd = command
         self.ready_check = ready_check
