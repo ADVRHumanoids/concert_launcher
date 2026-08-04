@@ -26,21 +26,10 @@ def resource_path(name):
 
 async def ensure_resources(connection):
     """Ensure helper files exist in ``/tmp`` on the target machine."""
-    # Probe first so normal API calls do not repeatedly transfer unchanged
-    # helpers across SSH.
-    missing = []
-    for name in RESOURCE_FILES:
-        code, _, _ = await remote.run_cmd(
-            connection,
-            "test -f /tmp/{}".format(name),
-            throw_on_failure=False,
-        )
-        if code != 0:
-            missing.append(name)
-
     # ``putfile`` chooses a local copy or SCP while preserving one deployment
-    # path for the lifecycle layer.
-    for name in missing:
+    # path for the lifecycle layer. These files are tiny, and refreshing them
+    # on connect keeps already-running labs from using stale helper scripts.
+    for name in RESOURCE_FILES:
         logger.info("installing launcher resource %s", name)
         await remote.putfile(connection, resource_path(name), "/tmp")
 
