@@ -13,6 +13,20 @@ from . import remote, tmux
 from .errors import ProcessError, RemoteConnectionError
 
 
+def _tail_follow_command(path, num_lines):
+    """Follow a log file, using low-latency GNU tail polling when available."""
+    output_path = shlex.quote(path)
+    tail_position = shlex.quote(str(num_lines))
+    return (
+        "touch {path} && "
+        "if tail --help 2>&1 | grep -q -- '--sleep-interval'; then "
+        "tail -f -s 0.1 -n {lines} {path}; "
+        "else "
+        "tail -f -n {lines} {path}; "
+        "fi"
+    ).format(path=output_path, lines=tail_position)
+
+
 async def status(
     launcher,
     process=None,
@@ -91,7 +105,7 @@ async def status(
                 elif entry.get("kill_pending"):
                     state = "STOPPING"
                 elif entry.get("dead"):
-                    state = "DEAD"
+                    state = "STOPPED" if entry.get("exitstatus") == 0 else "DEAD"
                 else:
                     state = "RUNNING"
             entry["state"] = state
@@ -194,14 +208,9 @@ async def watch(
             await launcher.connection_manager.invalidate(exc.machine)
             raise
 
-        # Each process gets one independent ``tail -f`` stream. Quoting keeps
+        # Each process gets one independent follow stream. Quoting keeps
         # process names and caller-provided tail positions shell-safe.
-        output_path = shlex.quote("/tmp/{}.stdout".format(name))
-        tail_position = shlex.quote(str(num_lines))
-        command = "touch {path} && tail -f -n {lines} {path}".format(
-            path=output_path,
-            lines=tail_position,
-        )
+        command = _tail_follow_command("/tmp/{}.stdout".format(name), num_lines)
         tasks.append(
             remote.watch_process(
                 config.ssh,
