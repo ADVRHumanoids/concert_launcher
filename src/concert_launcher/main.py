@@ -1,8 +1,11 @@
 """Console entry point."""
 
 import asyncio
+from datetime import datetime
+import io
 import logging
 import os
+import shutil
 import sys
 import time
 
@@ -17,6 +20,56 @@ from .cli import (
 from .errors import LauncherError, RemoteConnectionError
 from .launcher import Launcher
 from .output import ConsoleReporter, cli_color_enabled
+
+
+async def _render_status_watch_frame(launcher, args, timestamp):
+    """Build one complete status-watch frame before touching the terminal."""
+    original_reporter = launcher.reporter
+    stream = io.StringIO()
+    launcher.reporter = ConsoleReporter(stream=stream, color=original_reporter.color)
+    try:
+        launcher.reporter.refresh_header("Updated: {}".format(timestamp))
+        if args.pstree:
+            await launcher.pstree(args.process)
+        else:
+            await launcher.status(
+                args.process,
+                print_to_stdout=True,
+                raise_on_unavailable=False,
+            )
+        print(file=stream)
+        return stream.getvalue()
+    finally:
+        launcher.reporter = original_reporter
+
+
+def _paint_watch_frame(reporter, frame):
+    """Paint a pre-rendered frame with one terminal write."""
+    stream = reporter.stream
+    if getattr(stream, "isatty", lambda: False)():
+        frame = _fit_watch_frame(frame, shutil.get_terminal_size((80, 24)).lines)
+        frame = "\033[H" + frame + "\033[J"
+    stream.write(frame)
+    stream.flush()
+
+
+def _clear_watch_screen(reporter):
+    """Clear the terminal once when entering status-watch mode."""
+    stream = reporter.stream
+    if getattr(stream, "isatty", lambda: False)():
+        stream.write("\033[2J\033[H")
+        stream.flush()
+
+
+def _fit_watch_frame(frame, rows):
+    """Fit a frame to the terminal height without emitting a scrolling newline."""
+    lines = frame.splitlines()
+    if len(lines) > rows:
+        hidden = len(lines) - rows + 1
+        if rows <= 1:
+            return "... truncated {} lines ...".format(hidden)
+        lines = lines[: rows - 1] + ["... truncated {} lines ...".format(hidden)]
+    return "\n".join(lines)
 
 
 async def do_main(argv=None):
@@ -77,17 +130,15 @@ async def do_main(argv=None):
 
         if args.command == "status":
             if args.watch:
+                _clear_watch_screen(launcher.reporter)
                 while True:
                     started = time.monotonic()
-                    if args.pstree:
-                        await launcher.pstree(args.process)
-                    else:
-                        await launcher.status(
-                            args.process,
-                            print_to_stdout=True,
-                            raise_on_unavailable=False,
-                        )
-                    print()
+                    frame = await _render_status_watch_frame(
+                        launcher,
+                        args,
+                        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    )
+                    _paint_watch_frame(launcher.reporter, frame)
                     await asyncio.sleep(
                         max(0.0, 1.0 - (time.monotonic() - started))
                     )
