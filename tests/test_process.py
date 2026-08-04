@@ -62,7 +62,7 @@ class ProcessConfigTests(unittest.TestCase):
         )
         self.assertEqual(
             config.ready_check,
-            "docker exec -it kyon-noble-ros2-dev-1 bash -ic "
+            "docker exec -i kyon-noble-ros2-dev-1 bash -ic "
             "'timeout 5 ros2 topic echo /lidar_points --once'",
         )
 
