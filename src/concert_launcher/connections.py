@@ -7,6 +7,7 @@ connections, so stale transports and reconnect behavior remain consistent.
 
 import asyncio
 import logging
+import os
 
 import asyncssh
 
@@ -43,14 +44,45 @@ class ConnectionManager:
     def _parse_machine(machine):
         if not machine or "@" not in machine:
             raise ConfigurationError(
-                "remote machine must use the 'user@host' form: {!r}".format(machine)
+                "remote machine must use the 'user@host' or 'user@host:port' form: "
+                "{!r}".format(machine)
             )
         user, host = machine.split("@", 1)
         if not user or not host:
             raise ConfigurationError(
-                "remote machine must use the 'user@host' form: {!r}".format(machine)
+                "remote machine must use the 'user@host' or 'user@host:port' form: "
+                "{!r}".format(machine)
             )
-        return user, host
+        port = None
+        if host.count(":") == 1:
+            host_part, port_part = host.rsplit(":", 1)
+            if not port_part:
+                raise ConfigurationError(
+                    "remote machine port must be numeric: {!r}".format(machine)
+                )
+            try:
+                port = int(port_part)
+            except ValueError as exc:
+                raise ConfigurationError(
+                    "remote machine port must be numeric: {!r}".format(machine)
+                ) from exc
+            if not host_part:
+                raise ConfigurationError(
+                    "remote machine must include a host: {!r}".format(machine)
+                )
+            host = host_part
+        return user, host, port
+
+    @staticmethod
+    def _connect_options():
+        options = {}
+        key_path = os.environ.get("CONCERT_LAUNCHER_SSH_KEY")
+        known_hosts = os.environ.get("CONCERT_LAUNCHER_KNOWN_HOSTS")
+        if key_path:
+            options["client_keys"] = [key_path]
+        if known_hosts:
+            options["known_hosts"] = known_hosts
+        return options
 
     # AsyncSSH versions expose slightly different health helpers. Treat any
     # failing health check as closed rather than risking reuse of a bad socket.
@@ -84,12 +116,16 @@ class ConnectionManager:
                 await self._close_connection(cached)
                 self._connections.pop(machine, None)
 
-            user, host = self._parse_machine(machine)
+            user, host, port = self._parse_machine(machine)
+            options = self._connect_options()
+            if port is not None:
+                options["port"] = port
             try:
                 logger.info("opening SSH connection to %s", machine)
                 connection = await self._connect(
                     host=host,
                     username=user,
+                    **options,
                 )
             except asyncio.CancelledError:
                 raise
