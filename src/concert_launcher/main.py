@@ -1,220 +1,190 @@
-import argparse
-import argcomplete
-import logging
-import time
-import os
-import yaml
-from typing import List, Dict
+"""Console entry point."""
+
 import asyncio
+from datetime import datetime
+import io
+import logging
+import os
+import shutil
+import sys
+import time
 
-from concert_launcher import config
-from concert_launcher import executor
-from concert_launcher import monitoring_session
+from . import monitoring_session
+from .cli import (
+    build_parser,
+    default_config_path,
+    load_config,
+    parse_assignments,
+    process_choices,
+)
+from .errors import LauncherError, RemoteConnectionError
+from .launcher import Launcher
+from .output import ConsoleReporter, cli_color_enabled
 
-async def do_main():
 
-    # try to parse default config to provide process choices
-    # note: a local file named launcher.yaml has precendence over the env variable
-    if os.path.exists('./launcher.yaml'):
-        dfl_config_path = './launcher.yaml'
-    else:
-        dfl_config_path = os.environ.get('CONCERT_LAUNCHER_DEFAULT_CONFIG', None)
-    
-    process_choices = None
-    
+async def _render_status_watch_frame(launcher, args, timestamp):
+    """Build one complete status-watch frame before touching the terminal."""
+    original_reporter = launcher.reporter
+    stream = io.StringIO()
+    launcher.reporter = ConsoleReporter(stream=stream, color=original_reporter.color)
     try:
-        dfl_config = yaml.safe_load(open(dfl_config_path, 'r'))
-        process_choices = [pname for pname in dfl_config.keys() if pname != 'context']
-    except:
-        pass
-        
+        launcher.reporter.refresh_header("Updated: {}".format(timestamp))
+        if args.pstree:
+            await launcher.pstree(args.process)
+        else:
+            await launcher.status(
+                args.process,
+                print_to_stdout=True,
+                raise_on_unavailable=False,
+            )
+        print(file=stream)
+        return stream.getvalue()
+    finally:
+        launcher.reporter = original_reporter
 
-    # cmd line args
-    parser = argparse.ArgumentParser(description='A minimal YAML and TMUX based process launcher')
 
-    command = parser.add_subparsers(dest='command')
+def _paint_watch_frame(reporter, frame):
+    """Paint a pre-rendered frame with one terminal write."""
+    stream = reporter.stream
+    if getattr(stream, "isatty", lambda: False)():
+        frame = _fit_watch_frame(frame, shutil.get_terminal_size((80, 24)).lines)
+        frame = "\033[H" + frame + "\033[J"
+    stream.write(frame)
+    stream.flush()
 
-    command.required = True
-    
-    # run
-    run = command.add_parser('run', help='run the specified process and its dependencies')
-    
-    run.add_argument('process', choices=process_choices, help='process name to run')
-    
-    run.add_argument('--watch', '-w', action='store_true', help='wait for process to finish before returning')
-    
-    run.add_argument('--params', '-p', nargs='+', help='parameters for process execution (key:=value)')
-    
-    run.add_argument('--variants', '-v', nargs='+', help='variants for process execution (procname:=varname)')
 
-    run.add_argument('--config', '-c', default=dfl_config_path, type=str, help='path config file')
+def _clear_watch_screen(reporter):
+    """Clear the terminal once when entering status-watch mode."""
+    stream = reporter.stream
+    if getattr(stream, "isatty", lambda: False)():
+        stream.write("\033[2J\033[H")
+        stream.flush()
 
-    run.add_argument('--monitor', '-m', action='store_true', help='spawn a local tmux monitoring session')
 
-    run.add_argument('--log-level', '-l', dest='log_level', default='WARNING', 
-                        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
-                        help='set the logging level')
+def _fit_watch_frame(frame, rows):
+    """Fit a frame to the terminal height without emitting a scrolling newline."""
+    lines = frame.splitlines()
+    if len(lines) > rows:
+        hidden = len(lines) - rows + 1
+        if rows <= 1:
+            return "... truncated {} lines ...".format(hidden)
+        lines = lines[: rows - 1] + ["... truncated {} lines ...".format(hidden)]
+    return "\n".join(lines)
 
-    # kill
-    kill = command.add_parser('kill', help='kill the specified process and its dependant packages')
 
-    kill.add_argument('process', choices=process_choices, nargs='?', default=None, help='process name to run')
+async def do_main(argv=None):
+    config_path = default_config_path()
+    parser = build_parser(config_path, process_choices(config_path))
+    args = parser.parse_args(argv)
 
-    kill.add_argument('--all', '-a', action='store_true', help='kill all processes')
-
-    kill.add_argument('--config', '-c', default=dfl_config_path, type=str, help='path config file')
-
-    kill.add_argument('--log-level', '-l', dest='log_level', default='WARNING', 
-                        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
-                        help='set the logging level')
-
-    # status
-    status = command.add_parser('status', help='show status information for all processes')
-
-    status.add_argument('--watch', '-w', action='store_true', help='watch status every 1 second')
-
-    status.add_argument('--pstree', '-t', action='store_true', help='show process tree')
-
-    status.add_argument('--config', '-c', default=dfl_config_path, type=str, help='path config file')
-
-    status.add_argument('--log-level', '-l', dest='log_level', default='WARNING', 
-                        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
-                        help='set the logging level')
-    
-    # monitor
-    mon = command.add_parser('mon', help='spawn a tmux monitoring session on the local machine')
-
-    mon.add_argument('--replace', '-r', action='store_true', help='run monitoring session in current shell')
-
-    mon.add_argument('--config', '-c', default=dfl_config_path, type=str, help='path config file')
-
-    mon.add_argument('--log-level', '-l', dest='log_level', default='WARNING', 
-                        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
-                        help='set the logging level')
-    
-    # watch
-    watch = command.add_parser('watch', help='watch a process\' output')
-
-    watch.add_argument('process', choices=process_choices, nargs='?', default=None, help='process name to watch')
-
-    watch.add_argument('--config', '-c', default=dfl_config_path, type=str, help='path config file')
-
-    watch.add_argument('--num-lines', '-n', default='+1', type=str, help='number of output lines to display once started')
-
-    watch.add_argument('--log-level', '-l', dest='log_level', default='WARNING', 
-                        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'],
-                        help='set the logging level')
-    
-    argcomplete.autocomplete(parser)
-    args = parser.parse_args()
-
-    # convert log level string to corresponding numeric value
-    log_level = getattr(logging, args.log_level.upper())
-
-    config.ConfigOptions.verbose = log_level < getattr(logging, 'WARNING')
-
-    # logger
-    logger = logging.getLogger(__name__)
-
-    # configure logging with the specified level
-    logging.basicConfig(level=log_level)
-
-    # load config
-    config_path = os.path.abspath(args.config)
-
-    logger.info(f'loading config {config_path}')
-
-    cfg = yaml.safe_load(open(config_path))
-    
-    session = cfg['context']['session']
+    logging.basicConfig(level=getattr(logging, args.log_level.upper()))
+    config = load_config(os.path.abspath(args.config) if args.config else None)
+    launcher = Launcher(
+        config,
+        reporter=ConsoleReporter(
+            stream=sys.stdout,
+            color=cli_color_enabled(sys.stdout),
+        ),
+    )
+    session = config["context"]["session"]
 
     def spawn_monitor():
-        if args.command == 'mon' and args.replace:
-            os.execvpe('bash', ['bash', '-ic', f'tmux attach -t {session}_mon'], env=os.environ)
-        else:
-            os.system(f'x-terminal-emulator -x "tmux a -t {session}_mon; bash"')
+        if args.command == "mon" and args.replace:
+            os.execvpe(
+                "bash",
+                ["bash", "-ic", "tmux attach -t {}_mon".format(session)],
+                os.environ,
+            )
+        os.system(
+            'x-terminal-emulator -x "tmux a -t {0}_mon; bash"'.format(session)
+        )
 
-    if args.command == 'run':
-
-        # fill param dict
-        params = {}
-
-        args_params = args.params if args.params is not None else []
-
-        for p in args_params:
-            key, value = p.split(':=')
-            params[key] = value
-
-        logger.info(f'parameter dict is : {params}')
-
-        # fill variant dict (proc -> variant)
-        # e.g. 
-        # cl run --variant imp verbose
-        variants = []
-
-        args_variants = args.variants if args.variants is not None else []
-
-        variants = variants + args_variants
-
-        logger.info(f'variants list is : {variants}')
-
-        # create local viewer
-        if args.monitor:
-
-            await monitoring_session.create_monitoring_session(process=args.process, cfg=cfg)
-            
-            spawn_monitor()
-
-        # run processes
-        await executor.execute_process(process=args.process, cfg=cfg, params=params, variants=variants)
-        
-        # handle watch
-        if args.watch:
-            await executor.wait_process(process=args.process, cfg=cfg)
-
-    if args.command == 'kill':
-
-        proc_to_kill = None if args.all else args.process
-        
-        logger.info(f'will kill proc {proc_to_kill}')
-
-        await executor.kill(process=proc_to_kill, cfg=cfg)
-
-    if args.command == 'status':
-
-        if args.watch:
-
-            while True:
-                t0 = time.time()
-                if args.pstree:
-                    await executor.pstree(None, cfg=cfg)
-                else:
-                    await executor.status(None, cfg=cfg)
-                print('')
-                await asyncio.sleep(0.666 - (time.time() - t0))
-
-        else:
-            
-            if args.pstree:
-                    await executor.pstree(None, cfg=cfg)
+    try:
+        if args.command == "run":
+            params = parse_assignments(args.params, "--params")
+            variants = args.variants or []
+            if args.monitor:
+                await monitoring_session.create_monitoring_session(
+                    process=args.process, cfg=config
+                )
+                spawn_monitor()
+            if args.ssh_retries:
+                success = await launcher.execute_with_recovery(
+                    args.process,
+                    params=params,
+                    variants=variants,
+                    retries=args.ssh_retries,
+                )
             else:
-                await executor.status(None, cfg=cfg)
+                success = await launcher.execute_process(
+                    args.process, params=params, variants=variants
+                )
+            if args.watch and success:
+                return await launcher.wait_process(args.process)
+            return 0 if success else 1
 
-    if args.command == 'mon':
+        if args.command == "kill":
+            target = None if args.all else args.process
+            success = await launcher.kill(target, graceful=not args.force)
+            return 0 if success else 1
 
-        await monitoring_session.create_monitoring_session(process=None, cfg=cfg)
-        
-        spawn_monitor()
+        if args.command == "status":
+            if args.watch:
+                _clear_watch_screen(launcher.reporter)
+                while True:
+                    started = time.monotonic()
+                    frame = await _render_status_watch_frame(
+                        launcher,
+                        args,
+                        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    )
+                    _paint_watch_frame(launcher.reporter, frame)
+                    await asyncio.sleep(
+                        max(0.0, 1.0 - (time.monotonic() - started))
+                    )
+            elif args.pstree:
+                await launcher.pstree(args.process)
+            else:
+                await launcher.status(
+                    args.process,
+                    print_to_stdout=True,
+                    raise_on_unavailable=False,
+                )
+            return 0
 
-    if args.command == 'watch':
+        if args.command == "mon":
+            await monitoring_session.create_monitoring_session(
+                process=None, cfg=config
+            )
+            spawn_monitor()
+            return 0
 
-        await executor.watch(process=args.process, cfg=cfg, num_lines=args.num_lines)
-        
-    
-def main():
+        if args.command == "watch":
+            await launcher.watch(args.process, num_lines=args.num_lines)
+            return 0
 
-    asyncio.get_event_loop().run_until_complete(do_main())
-    
+        parser.error("unknown command {!r}".format(args.command))
+    finally:
+        await launcher.close()
 
-if __name__ == '__main__':
-    main()
+
+def main(argv=None):
+    try:
+        return asyncio.get_event_loop().run_until_complete(do_main(argv))
+    except KeyboardInterrupt:
+        return 130
+    except RemoteConnectionError as exc:
+        print("Remote host unavailable: {}".format(exc), file=sys.stderr)
+        print(
+            "Retry the command, use --ssh-retries, or call Launcher.recover() "
+            "from the asyncio API.",
+            file=sys.stderr,
+        )
+        return 2
+    except LauncherError as exc:
+        print("concert_launcher: {}".format(exc), file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())

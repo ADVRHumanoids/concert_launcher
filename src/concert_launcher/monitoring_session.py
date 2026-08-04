@@ -1,8 +1,10 @@
 from typing import Dict
 import logging
+import shlex
 from . import remote
-import asyncssh, asyncio
+import asyncio
 import os
+from .connections import ConnectionManager
 from .executor import ConfigParser
 
 ssh = None
@@ -13,20 +15,24 @@ num_cols = 3
 pane_to_split = 0
 num_rows = 1
 num_panes = 0
+pane_targets = []
 
 pkg_already_processed = set()
 
 lock = asyncio.Lock()
 
-async def create_monitoring_session(process: str, cfg: Dict, level=0):
+async def create_monitoring_session(process: str, cfg: Dict, level=0, monitor_session=None):
 
-    session_names = set()
+    default_session = cfg["context"]["session"]
+    session_names = {default_session}
 
     if level == 0:
-        
+        pkg_already_processed.clear()
+
         for pname, pfield in cfg.items():
-            if 'session' in pfield.keys():
-                session_names.add(pfield['session'])
+            if pname == "context" or not isinstance(pfield, dict):
+                continue
+            session_names.add(pfield.get("session", default_session))
 
         logging.info('found session names: %s' % session_names)
 
@@ -36,13 +42,16 @@ async def create_monitoring_session(process: str, cfg: Dict, level=0):
             global pane_to_split 
             global num_rows 
             global num_panes 
+            global pane_targets
 
             num_cols = 3
             pane_to_split = 0
             num_rows = 1
             num_panes = 0
+            pane_targets = []
 
             logging.info('processing session %s' % s)
+            await _reset_monitor_session(s + "_mon")
 
             for pname, pfield in cfg.items():
 
@@ -56,7 +65,12 @@ async def create_monitoring_session(process: str, cfg: Dict, level=0):
 
                 logging.info('processing process %s' % pname)
 
-                await create_monitoring_session(pname, cfg, level=1)
+                await create_monitoring_session(
+                    pname,
+                    cfg,
+                    level=1,
+                    monitor_session=s + "_mon",
+                )
 
         return
 
@@ -66,7 +80,62 @@ async def create_monitoring_session(process: str, cfg: Dict, level=0):
 
     # do process
     async with lock:
-        await _create_monitoring_session_non_reentrant(e, process, level, cfg['context']['session'] + '_mon')
+        await _create_monitoring_session_non_reentrant(
+            e,
+            process,
+            level,
+            monitor_session or default_session + "_mon",
+        )
+
+
+def _remote_attach_command(session, process):
+    target = "{}:{}".format(session, process)
+    quoted_target = shlex.quote(target)
+    return (
+        "while ! tmux has-session -t {target}; do "
+        "echo waiting for session {label} to exist..; "
+        "sleep 1; "
+        "done; "
+        "unset TMUX; "
+        "tmux attach -t {target}"
+    ).format(target=quoted_target, label=shlex.quote(target))
+
+
+def _ssh_monitor_command(machine, command):
+    user, host, port = ConnectionManager._parse_machine(machine)
+    args = ["ssh", "-tt"]
+
+    key_path = os.environ.get("CONCERT_LAUNCHER_SSH_KEY")
+    known_hosts = os.environ.get("CONCERT_LAUNCHER_KNOWN_HOSTS")
+    if key_path:
+        args.extend(["-i", key_path, "-o", "IdentitiesOnly=yes"])
+    if known_hosts:
+        args.extend([
+            "-o",
+            "UserKnownHostsFile={}".format(known_hosts),
+            "-o",
+            "StrictHostKeyChecking=yes",
+        ])
+    if port is not None:
+        args.extend(["-p", str(port)])
+
+    args.extend(["{}@{}".format(user, host), command])
+    return " ".join(shlex.quote(arg) for arg in args)
+
+
+def _monitor_command(e, process):
+    command = _remote_attach_command(e.session, process)
+    if e.machine is not None:
+        return _ssh_monitor_command(e.machine, command)
+    return command
+
+
+async def _reset_monitor_session(tmux_session):
+    await remote.run_cmd(
+        ssh,
+        "tmux kill-session -t {}".format(shlex.quote(tmux_session)),
+        throw_on_failure=False,
+    )
 
 
 async def _create_monitoring_session_non_reentrant(e: ConfigParser, process: str, level, tmux_session):
@@ -81,51 +150,77 @@ async def _create_monitoring_session_non_reentrant(e: ConfigParser, process: str
     if not e.persistent:
         return
 
-    # define monitoring command (connect ssh -> wait for session -> attach)
-    cmd = f"while ! tmux has-session -t {process}:{process}; do echo waiting for session {process} to exist..; sleep 1; done; unset TMUX; tmux a -t {process}:{process}"
-    
-    if e.machine is not None:
-        cmd = f"ssh {e.machine} -tt '{cmd}'"
+    # define monitoring command (connect ssh -> wait for session/window -> attach)
+    cmd = _monitor_command(e, process)
     
     # on first time, ssh connection to local pc (tbd: support remote maybe)
     # and session creation
     global num_rows
     global num_panes
     global pane_to_split
+    global pane_targets
 
     print(f'adding session {process} to monitor')
 
     if num_panes == 0:  
     
         ret, _, _ = await remote.run_cmd(ssh,
-                        f'tmux has-session -t {tmux_session}',
+                        "tmux has-session -t {}".format(shlex.quote(tmux_session)),
                         throw_on_failure=False)
         if ret != 0:
-            # kill and re-create monitor session
-            await remote.run_cmd(ssh, 
-                        f'tmux kill-session -t {tmux_session} || tmux new-session -d -s {tmux_session} -n {e.session} "{cmd}"')
+            await remote.run_cmd(
+                ssh,
+                "tmux new-session -d -s {session} -n {window} {cmd}".format(
+                    session=shlex.quote(tmux_session),
+                    window=shlex.quote(e.session),
+                    cmd=shlex.quote(cmd),
+                ),
+            )
             
             await remote.run_cmd(ssh, 
-                                 f'tmux set -t {tmux_session} status-style bg=magenta')
+                                 "tmux set -t {} status-style bg=magenta".format(
+                                     shlex.quote(tmux_session)
+                                 ))
 
         else:
-            await remote.run_cmd(ssh, 
-                        f'tmux kill-window -t {tmux_session}:{e.session}; tmux new-window -d -t {tmux_session} -n {e.session} "{cmd}"',
-                        throw_on_failure=False)
+            target = "{}:{}".format(tmux_session, e.session)
+            await remote.run_cmd(
+                ssh,
+                (
+                    "tmux kill-window -t {target} || true; "
+                    "tmux new-window -d -t {session} -n {window} {cmd}"
+                ).format(
+                    target=shlex.quote(target),
+                    session=shlex.quote(tmux_session),
+                    window=shlex.quote(e.session),
+                    cmd=shlex.quote(cmd),
+                ),
+            )
         
         num_panes = 1
+        _, pane_id, _ = await remote.run_cmd(
+            ssh,
+            "tmux display-message -p -t {} '#{{pane_id}}'".format(
+                shlex.quote("{}:{}.0".format(tmux_session, e.session))
+            ),
+        )
+        pane_targets = [pane_id.strip()]
         
         await remote.run_cmd(ssh, 
-                f"tmux set -t {tmux_session} mouse on")   
+                "tmux set -t {} mouse on".format(shlex.quote(tmux_session)))
         
         
         await remote.run_cmd(ssh, 
-                f"tmux set -t {tmux_session} aggressive-resize on")   
+                "tmux set -t {} aggressive-resize on".format(
+                    shlex.quote(tmux_session)
+                ))
         
         await remote.run_cmd(ssh, 
-                f"tmux set -t {tmux_session} remain-on-exit on")
+                "tmux set -t {} remain-on-exit on".format(
+                    shlex.quote(tmux_session)
+                ))
         
-        print(f'moniting session created (tmux a -t {tmux_session})')
+        print(f'monitoring session created (tmux a -t {tmux_session})')
         
         return
 
@@ -136,10 +231,17 @@ async def _create_monitoring_session_non_reentrant(e: ConfigParser, process: str
 
     split_type = '-h' if num_rows == 1 else '-v'
         
-    await remote.run_cmd(ssh,
-                   f'tmux split-window {split_type} -t {tmux_session}:{e.session}.{pane_to_split} "{cmd}"',
-                   interactive=False,
-                   throw_on_failure=False)
+    split_target = pane_targets[pane_to_split]
+    _, pane_id, _ = await remote.run_cmd(
+        ssh,
+        "tmux split-window -P -F '#{{pane_id}}' {split_type} -t {target} {cmd}".format(
+            split_type=split_type,
+            target=shlex.quote(split_target),
+            cmd=shlex.quote(cmd),
+        ),
+        interactive=False,
+    )
+    pane_targets.append(pane_id.strip())
     
     pane_to_split += num_rows
 
@@ -152,7 +254,10 @@ async def _create_monitoring_session_non_reentrant(e: ConfigParser, process: str
     # redraw layout
     layout = 'even-horizontal' if num_rows == 1 else 'tiled'
     await remote.run_cmd(ssh,
-                   f'tmux select-layout -t {tmux_session}:{e.session} {layout}',
+                   "tmux select-layout -t {} {}".format(
+                       shlex.quote("{}:{}".format(tmux_session, e.session)),
+                       shlex.quote(layout),
+                   ),
                    interactive=False,
                    throw_on_failure=False)
     

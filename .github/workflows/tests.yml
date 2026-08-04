@@ -1,0 +1,36 @@
+name: Tests
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install package
+        run: python -m pip install -e .
+      - name: Run unit suite
+        shell: bash
+        run: |
+          modules=$(find tests -maxdepth 1 -type f -name 'test_*.py' -printf '%f\n' | sed 's/\.py$//' | tr '\n' ' ')
+          PYTHONPATH=tests/stubs:src:tests python -m unittest -v $modules
+
+  docker-ssh:
+    name: Docker SSH integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run Docker-backed remote tests
+        run: ./tests/integration/run.sh

@@ -1,0 +1,61 @@
+services:
+  ssh-a:
+    build:
+      context: ../..
+      dockerfile: tests/integration/ssh-host/Dockerfile
+    hostname: ssh-a
+    volumes:
+      - ./.state:/test-keys:ro
+
+  ssh-b:
+    build:
+      context: ../..
+      dockerfile: tests/integration/ssh-host/Dockerfile
+    hostname: ssh-b
+    volumes:
+      - ./.state:/test-keys:ro
+
+  ssh-proxy-a:
+    build:
+      context: ../..
+      dockerfile: tests/integration/ssh-proxy/Dockerfile
+    environment:
+      TARGET_HOST: ssh-a
+      TARGET_PORT: "22"
+    depends_on:
+      ssh-a:
+        condition: service_healthy
+
+  ssh-proxy-b:
+    build:
+      context: ../..
+      dockerfile: tests/integration/ssh-proxy/Dockerfile
+    environment:
+      TARGET_HOST: ssh-b
+      TARGET_PORT: "22"
+    depends_on:
+      ssh-b:
+        condition: service_healthy
+
+  runner:
+    build:
+      context: ../..
+      dockerfile: tests/integration/runner/Dockerfile
+    environment:
+      CONCERT_TEST_SSH_A: tester@ssh-proxy-a
+      CONCERT_TEST_SSH_B: tester@ssh-proxy-b
+      CONCERT_TEST_DIRECT_SSH_A: tester@ssh-a
+      CONCERT_TEST_DIRECT_SSH_B: tester@ssh-b
+      CONCERT_TEST_PROXY_A: http://ssh-proxy-a:8474
+      CONCERT_TEST_PROXY_B: http://ssh-proxy-b:8474
+    volumes:
+      - ./.state:/test-keys:ro
+    depends_on:
+      ssh-a:
+        condition: service_healthy
+      ssh-b:
+        condition: service_healthy
+      ssh-proxy-a:
+        condition: service_healthy
+      ssh-proxy-b:
+        condition: service_healthy

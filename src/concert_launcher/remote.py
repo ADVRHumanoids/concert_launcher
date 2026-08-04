@@ -1,237 +1,155 @@
-import logging
-import shutil
-from . import config
-import asyncssh, asyncio
+"""Execute commands and copy files over local or AsyncSSH transports.
 
-# logger
+Every higher-level module uses these primitives, which keeps local/remote
+behavior aligned and converts transport failures into ``RemoteConnectionError``.
+"""
+
+import asyncio
+import logging
+import shlex
+import shutil
+
+import asyncssh
+
+from .errors import CommandError, RemoteConnectionError
+
 logger = logging.getLogger(__name__)
 
-async def putfile(remote: asyncssh.SSHClientConnection, 
-                  local_path: str, 
-                  remote_path: str):
-    
-    if remote is None:
+
+# Error messages should identify the host even when an AsyncSSH object exposes
+# its connection metadata through private attributes.
+def connection_machine(connection):
+    if connection is None:
+        return "local"
+    user = getattr(connection, "_username", None) or getattr(
+        connection, "username", None
+    )
+    host = getattr(connection, "_host", None) or getattr(connection, "host", None)
+    if user and host:
+        return "{}@{}".format(user, host)
+    return str(host or "remote host")
+
+
+# Resource deployment uses a normal filesystem copy locally and SCP remotely.
+async def putfile(connection, local_path, remote_path):
+    if connection is None:
         shutil.copy(local_path, remote_path)
-    else:
-        await run_cmd(None, f'scp {local_path} {remote._username}@{remote._host}:{remote_path}', 
-                      interactive=False, throw_on_failure=True)
+        return
+    try:
+        await asyncssh.scp(local_path, (connection, remote_path))
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        raise RemoteConnectionError(
+            connection_machine(connection),
+            "copy {} to {}".format(local_path, remote_path),
+            exc,
+        ) from exc
 
 
-async def run_cmd(remote: asyncssh.SSHClientConnection, 
-                  cmd: str, 
-                  timeout=None, 
-                  interactive=False, 
-                  throw_on_failure=True):
-    
-    verbose = config.ConfigOptions.verbose
+async def run_cmd(
+    connection,
+    cmd,
+    timeout=None,
+    interactive=False,
+    throw_on_failure=True,
+):
+    """Run one finite command and return ``(code, stdout, stderr)``."""
+    # Interactive commands use a login-style shell. A PTY is requested only
+    # for this path because forcing one on the shared connection breaks SCP.
+    cmd_real = "bash -ic {}".format(shlex.quote(cmd)) if interactive else cmd
+    logger.debug("running on %s: %s", connection_machine(connection), cmd_real)
 
-    if interactive:
-        cmd_real = f"bash -ic '{cmd}'"
-    else:
-        cmd_real = cmd
-    
-    logger.info(f'running {cmd_real}')
-
-    if remote is None:
-        proc = await asyncio.create_subprocess_shell(cmd_real, 
-                    stdin=asyncio.subprocess.DEVNULL,
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE)
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
-        stdout, stderr = stdout.decode(), stderr.decode()
-        retcode = proc.returncode
-    else:
-        res = await remote.run(cmd_real, check=False, timeout=timeout)
-        retcode = res.returncode
-        stdout = res.stdout
-        stderr = res.stderr
-
-    logger.debug(f'{cmd} exitcode: {retcode}')
-
-    logger.debug(f'{cmd} stdout: {stdout}')
-
-    logger.debug(f'{cmd} stderr: {stderr}')
-
-    if throw_on_failure and retcode != 0:
-        raise RuntimeError(f'command {cmd} returned {retcode}')
-
-    return retcode, stdout.strip(), stderr.strip()
-
-
-async def watch_process(remote: asyncssh.SSHClientConnection, 
-                        cmd: str, 
-                        stdout_coro,
-                        interactive=False, 
-                        throw_on_failure=True):
-    
-    if remote is None: 
-        proc = await asyncio.create_subprocess_shell(cmd,
+    try:
+        # Local and SSH execution intentionally converge on the same normalized
+        # return tuple before error policy is applied below.
+        if connection is None:
+            proc = await asyncio.create_subprocess_shell(
+                cmd_real,
+                stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                stdin=asyncio.subprocess.PIPE)
-        decode = True
-    else:
-        proc = await remote.create_process(cmd)
-        decode = False
-    
-    while True:
-        try:
-            l = await proc.stdout.readline()
-        except BaseException as e:
-            print(f'exception ({e}) while running {cmd} -> skipping line')
-            continue
-            
-        if decode:
-            try:
-                l = l.decode('ascii')
-            except BaseException as e:
-                print(f'exception ({e}) while decoding line from {cmd} -> skipping line')
-                continue
-        if len(l) == 0:
-            return
-        await stdout_coro(l)
+            )
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                proc.communicate(), timeout=timeout
+            )
+            stdout = stdout_bytes.decode(errors="replace")
+            stderr = stderr_bytes.decode(errors="replace")
+            returncode = proc.returncode
+        else:
+            run_options = {"check": False, "timeout": timeout}
+            if interactive:
+                run_options["request_pty"] = "force"
+            result = await connection.run(cmd_real, **run_options)
+            returncode = result.returncode
+            stdout = result.stdout
+            stderr = result.stderr
+    except asyncio.CancelledError:
+        raise
+    except asyncio.TimeoutError as exc:
+        # Remote timeouts are recoverable transport failures; local timeouts
+        # remain command failures because no connection can be refreshed.
+        if connection is not None:
+            raise RemoteConnectionError(
+                connection_machine(connection),
+                "run command {!r}".format(cmd),
+                exc,
+            ) from exc
+        raise CommandError(cmd, stderr="timed out") from exc
+    except Exception as exc:
+        if connection is not None:
+            raise RemoteConnectionError(
+                connection_machine(connection),
+                "run command {!r}".format(cmd),
+                exc,
+            ) from exc
+        raise
+
+    # Normalize AsyncSSH and subprocess output before deciding whether a
+    # non-zero return code should be raised or returned to the caller.
+    stdout = (stdout or "").strip()
+    stderr = (stderr or "").strip()
+    if throw_on_failure and returncode != 0:
+        raise CommandError(cmd, returncode, stderr)
+    return returncode, stdout, stderr
 
 
-async def tmux_ls(remote: asyncssh.SSHClientConnection, session: str):
-    
-    list_w_cmd = "tmux list-w -t %s -F '#{session_name} #{window_name} #{pane_pid} #{pane_dead} #{pane_dead_status}'" % session
-    
-    retcode, stdout, _ = await run_cmd(remote, list_w_cmd, throw_on_failure=False)
-    
-    if retcode == 1:
-        return {}
-    
-    if retcode != 0:
-        raise RuntimeError(f'tmux list-w returned unexpected exit code {retcode}')
-    
-    logger.info(f'tmux ls got stdout: {stdout}')
-    
-    ret = dict()
+async def watch_process(
+    connection,
+    cmd,
+    stdout_coro,
+    interactive=False,
+    throw_on_failure=True,
+):
+    """Stream stdout lines until the command ends or the transport fails."""
+    del interactive, throw_on_failure
+    try:
+        # Keep the stream object alive while forwarding each line to the
+        # caller-provided coroutine. The higher layer owns cancellation.
+        if connection is None:
+            proc = await asyncio.create_subprocess_shell(
+                cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                stdin=asyncio.subprocess.DEVNULL,
+            )
+            decode = True
+        else:
+            proc = await connection.create_process(cmd)
+            decode = False
 
-    for l in stdout.split('\n'):
-        
-        tokens = l.strip().split(' ')
-
-        if len(tokens) == 4:
-            tokens.append(0)
-        
-        sname, wname, pid, dead, dead_status = tokens
-        
-        if sname != session:
-            continue
-
-        ret[wname] = {
-            'pid': int(pid),
-            'dead': int(dead) == 1,
-            'exitstatus': int(dead_status),
-            'run_pending': (await run_cmd(remote, f'ls /tmp/{wname}.STARTING', throw_on_failure=False))[0] == 0,
-            'kill_pending': (await run_cmd(remote, f'ls /tmp/{wname}.KILLING', throw_on_failure=False))[0] == 0,
-        }
-
-    logger.info(f'tmux ls returns: {ret}')
-
-    return ret
-
-
-
-async def tmux_has_session(remote: asyncssh.SSHClientConnection, session: str, window: str):
-
-    retcode, _, _ = await run_cmd(remote, f'tmux has-session -t {session}:{window}', throw_on_failure=False)
-
-    if retcode == 0:
-        return True
-    elif retcode == 1:
-        return False
-    elif retcode == 127:
-        # Specific check for command not found (tmux likely not installed)
-        err_msg = (f"Failed to run 'tmux': Command not found (exit code 127).\n"
-                   f"  Please ensure 'tmux' is installed on the machine  \n"
-                   f"  and that it's accessible in the environment's PATH where concert_launcher runs.\n"
-                   f"  (Checking for session='{session}', window='{window}')")
-        logger.error(err_msg) # Log the detailed error
-        raise RuntimeError(err_msg)
-    else:
-        # Handle other unexpected tmux errors
-        err_msg = (f"Command 'tmux has-session -t {session}:{window}' failed with unexpected exit code {retcode}.\n")
-        logger.error(err_msg)
-        raise RuntimeError(err_msg)
-
-
-async def tmux_session_alive(remote: asyncssh.SSHClientConnection, session: str, window: str):
-
-    if not await tmux_has_session(remote, session, window):
-
-        return False
-
-    lsdict = await tmux_ls(remote, session)
-
-    return window in lsdict.keys() and not lsdict[window]['dead']
-
-
-
-tmux_spawn_new_session_lock = asyncio.Lock()
-
-async def tmux_spawn_new_session(remote: asyncssh.SSHClientConnection, session: str, window: str, cmd: str):
-
-    async with tmux_spawn_new_session_lock:
-        logger.debug(f'>>>>>>>>>>> BEGIN _tmux_spawn_new_session {session}:{window}')
-        ret = await _tmux_spawn_new_session(remote, session, window, cmd)
-        logger.debug(f'<<<<<<<<<<< END   _tmux_spawn_new_session {session}:{window}')
-        return ret
-
-
-async def _tmux_spawn_new_session(remote: asyncssh.SSHClientConnection, session: str, window: str, cmd: str):
-
-    lsdict = await tmux_ls(remote, session)
-
-    if len(lsdict) == 0:
-        
-        cmds = [
-            f"tmux new-session -d -s {session} -n {window} /tmp/concert_launcher_wrapper.bash {window} '{cmd}'",
-            f"tmux new-session -d -t {session} -s {window}",
-            f"tmux set -t {session} aggressive-resize on",
-            f"tmux set -t {session} mouse on",
-            f"tmux set -t {session} remain-on-exit on",
-            f"tmux set -t {session} history-limit 10000",
-            f"tmux set -t {window} mouse on",
-            f"tmux set -t {window} remain-on-exit on",
-            f"tmux set -t {window} history-limit 10000",
-        ]
-        
-        cmd_union = ' && '.join(cmds)
-
-        await run_cmd(remote, cmd_union)
-        
-    elif window not in lsdict.keys():
-        
-        cmds = [
-            f"tmux new-session -d -t {session} -s {window}",
-            f"tmux set -t {window} mouse on",
-            f"tmux set -t {window} remain-on-exit on",
-            f"tmux set -t {window} history-limit 10000",
-            f"tmux new-window -d -a -t {window} -n {window} /tmp/concert_launcher_wrapper.bash {window} '{cmd}'",
-            f"tmux set -t {window} aggressive-resize on",
-        ]
-
-        cmd_union = ' && '.join(cmds)
-
-        await run_cmd(remote, cmd_union)
-        
-    elif lsdict[window]['dead']:
-
-        await run_cmd(remote, 
-                f"tmux respawn-window -t {session}:{window} /tmp/concert_launcher_wrapper.bash {window} '{cmd}'") 
-
-    else:
-
-        raise RuntimeError(f'window {window} exists and is not dead')
-
-    cmds = [
-        f"tmux set -t {session}:{window} remain-on-exit on",
-        f"tmux set -t {session}:{window} history-limit 10000",
-    ]
-        
-    cmd_union = ' && '.join(cmds)
-
-    await run_cmd(remote, cmd_union)
-    
+        while True:
+            line = await proc.stdout.readline()
+            if not line:
+                return
+            if decode:
+                line = line.decode(errors="replace")
+            await stdout_coro(line)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        if connection is not None:
+            raise RemoteConnectionError(
+                connection_machine(connection), "watch process output", exc
+            ) from exc
+        raise
