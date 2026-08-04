@@ -25,54 +25,45 @@ class StatusStateTests(unittest.TestCase):
         finally:
             loop.close()
 
+    def status_for_exit(self, exitstatus):
+        config = {
+            "context": {"session": "robot"},
+            "controller": {"cmd": "controller"},
+        }
+        launcher = Launcher(config, connection_manager=LocalManager())
+
+        async def list_windows(_connection, _session):
+            return {
+                "controller": {
+                    "dead": True,
+                    "exitstatus": exitstatus,
+                    "managed": True,
+                    "legacy_managed": False,
+                    "ambiguous": False,
+                    "run_pending": False,
+                    "kill_pending": False,
+                    "pid": 123,
+                }
+            }
+
+        with mock.patch("concert_launcher.inspection.tmux.list_windows", list_windows):
+            result = self.run_async(launcher.status("controller"))
+
+        return result["robot"]["controller"]
+
     def test_dead_pane_with_zero_exit_is_stopped(self):
-        config = {
-            "context": {"session": "robot"},
-            "controller": {"cmd": "controller"},
-        }
-        launcher = Launcher(config, connection_manager=LocalManager())
+        entry = self.status_for_exit(0)
+        self.assertEqual(entry["state"], "STOPPED")
+        self.assertEqual(entry["exitstatus"], 0)
 
-        async def list_windows(_connection, _session):
-            return {
-                "controller": {
-                    "dead": True,
-                    "exitstatus": 0,
-                    "managed": True,
-                    "legacy_managed": False,
-                    "ambiguous": False,
-                    "run_pending": False,
-                    "kill_pending": False,
-                    "pid": 123,
-                }
-            }
+    def test_dead_pane_with_expected_signal_exit_is_stopped(self):
+        for exitstatus in (130, 131, 143):
+            with self.subTest(exitstatus=exitstatus):
+                entry = self.status_for_exit(exitstatus)
+                self.assertEqual(entry["state"], "STOPPED")
+                self.assertEqual(entry["exitstatus"], exitstatus)
 
-        with mock.patch("concert_launcher.inspection.tmux.list_windows", list_windows):
-            result = self.run_async(launcher.status("controller"))
-
-        self.assertEqual(result["robot"]["controller"]["state"], "STOPPED")
-
-    def test_dead_pane_with_nonzero_exit_is_dead(self):
-        config = {
-            "context": {"session": "robot"},
-            "controller": {"cmd": "controller"},
-        }
-        launcher = Launcher(config, connection_manager=LocalManager())
-
-        async def list_windows(_connection, _session):
-            return {
-                "controller": {
-                    "dead": True,
-                    "exitstatus": 17,
-                    "managed": True,
-                    "legacy_managed": False,
-                    "ambiguous": False,
-                    "run_pending": False,
-                    "kill_pending": False,
-                    "pid": 123,
-                }
-            }
-
-        with mock.patch("concert_launcher.inspection.tmux.list_windows", list_windows):
-            result = self.run_async(launcher.status("controller"))
-
-        self.assertEqual(result["robot"]["controller"]["state"], "DEAD")
+    def test_dead_pane_with_other_nonzero_exit_is_dead(self):
+        entry = self.status_for_exit(17)
+        self.assertEqual(entry["state"], "DEAD")
+        self.assertEqual(entry["exitstatus"], 17)
