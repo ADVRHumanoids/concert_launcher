@@ -21,10 +21,13 @@ echo "starting process $NAME ($CMD)" | tee -a "$STDOUT_FILE"
 export PYTHONUNBUFFERED=1
 
 if command -v ts >/dev/null 2>&1; then
-    stdbuf -oL bash -ic "$CMD" 2>&1 | ts '[%H:%M:%.S]' | tee -a "$STDOUT_FILE"
+    stdbuf -oL -eL bash -ic "$CMD" 2>&1 \
+        | stdbuf -oL -eL ts '[%H:%M:%.S]' \
+        | stdbuf -oL -eL tee -a "$STDOUT_FILE"
     RET=${PIPESTATUS[0]}
 else
-    stdbuf -oL bash -ic "$CMD" 2>&1 | tee -a "$STDOUT_FILE"
+    stdbuf -oL -eL bash -ic "$CMD" 2>&1 \
+        | stdbuf -oL -eL tee -a "$STDOUT_FILE"
     RET=${PIPESTATUS[0]}
 fi
 
