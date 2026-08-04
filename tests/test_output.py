@@ -4,6 +4,7 @@ import re
 import unittest
 
 from concert_launcher.output import ConsoleReporter
+from concert_launcher.output import _PROCESS_STYLES
 
 
 class TtyStringIO(io.StringIO):
@@ -47,6 +48,30 @@ class OutputTests(unittest.TestCase):
         self.assertIn("UNAVAILABLE", output)
         self.assertNotIn("\033", output)
 
+    def test_refresh_header_redraws_from_top_on_interactive_terminal(self):
+        stream = TtyStringIO()
+        reporter = ConsoleReporter(stream=stream, color=False)
+        reporter.refresh_header("Updated: 2026-08-01 14:30:00", redraw=True)
+
+        self.assertTrue(stream.getvalue().startswith("\033[H"))
+        self.assertIn("Updated: 2026-08-01 14:30:00", stream.getvalue())
+
+    def test_refresh_header_does_not_redraw_redirected_output(self):
+        stream = io.StringIO()
+        reporter = ConsoleReporter(stream=stream, color=False)
+        reporter.refresh_header("Updated: 2026-08-01 14:30:00", redraw=True)
+
+        self.assertEqual(stream.getvalue(), "Updated: 2026-08-01 14:30:00\n")
+
+    def test_refresh_footer_clears_remainder_only_on_interactive_terminal(self):
+        tty_stream = TtyStringIO()
+        ConsoleReporter(stream=tty_stream).refresh_footer(redraw=True)
+        self.assertEqual(tty_stream.getvalue(), "\033[J")
+
+        plain_stream = io.StringIO()
+        ConsoleReporter(stream=plain_stream).refresh_footer(redraw=True)
+        self.assertEqual(plain_stream.getvalue(), "")
+
     def test_watch_colors_only_the_process_label(self):
         stream = io.StringIO()
         reporter = ConsoleReporter(stream=stream, color=True)
@@ -66,6 +91,17 @@ class OutputTests(unittest.TestCase):
             reporter.process_style("controller"),
             reporter.process_style("camera"),
         )
+
+    def test_example_process_colors_do_not_collide_or_use_yellow(self):
+        reporter = ConsoleReporter(color=True)
+        processes = ("web", "heartbeat_a", "heartbeat_b", "http_probe")
+        styles = [reporter.process_style(process) for process in processes]
+
+        self.assertEqual(len(styles), len(set(styles)))
+        self.assertNotIn("yellow", styles)
+        self.assertNotIn("bright_yellow", styles)
+        self.assertNotIn("yellow", _PROCESS_STYLES)
+        self.assertNotIn("bright_yellow", _PROCESS_STYLES)
 
     def test_status_uses_distinct_state_colors(self):
         stream = io.StringIO()

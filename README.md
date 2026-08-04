@@ -29,6 +29,7 @@ a colored CLI walkthrough, an ANSI-free asyncio API example, and an SSH recovery
 example using controllable proxies.
 
 ```bash
+./examples/docker/prepare.sh
 ./examples/docker/run.sh cli
 ./examples/docker/run.sh api
 ./examples/docker/run.sh recovery

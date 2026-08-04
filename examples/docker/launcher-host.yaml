@@ -1,0 +1,39 @@
+# Host-facing version of launcher.yaml.
+#
+# Run ./examples/docker/prepare.sh, then source examples/docker/.state/host-env
+# before using this file from the host.
+context:
+  session: concert_examples
+  params:
+    port: 47001
+    probe_message: dependency-ready
+
+web:
+  machine: tester@127.0.0.1:2222
+  cmd: python3 -m http.server {port} --bind 0.0.0.0
+  ready_check: nc -z -w 1 127.0.0.1 {port}
+
+heartbeat_a:
+  machine: tester@127.0.0.1:2222
+  cmd: python3 /usr/local/bin/concert-heartbeat
+
+heartbeat_b:
+  machine: tester@127.0.0.1:2223
+  cmd: python3 /usr/local/bin/concert-heartbeat
+
+http_probe:
+  machine: tester@127.0.0.1:2223
+  persistent: false
+  depends: [web]
+  cmd: >-
+    nc -z -w 2 ssh-a {port}
+    && printf '{probe_message}\n'
+  variants:
+    output:
+      - concise:
+          params:
+            probe_message: dependency-ready
+      - verbose:
+          cmd: >-
+            {cmd}
+            && printf 'source=ssh-b target=ssh-a port={port}\n'

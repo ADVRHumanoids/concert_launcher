@@ -1,7 +1,10 @@
 import asyncio
+import os
 import unittest
+from unittest import mock
 
 from concert_launcher.connections import ConnectionManager
+from concert_launcher.errors import ConfigurationError
 from concert_launcher.errors import RemoteConnectionError
 
 
@@ -53,6 +56,68 @@ class ConnectionManagerTests(unittest.TestCase):
             self.assertEqual(
                 attempts[-1],
                 {"host": "10.0.0.2", "username": "robot"},
+            )
+
+        self.run_async(scenario())
+
+    def test_machine_can_include_port(self):
+        attempts = []
+        connection = FakeConnection()
+
+        async def connect(**kwargs):
+            attempts.append(kwargs)
+            return connection
+
+        manager = ConnectionManager(connect=connect)
+
+        async def scenario():
+            self.assertIs(await manager.get("robot@127.0.0.1:2222"), connection)
+            self.assertEqual(
+                attempts[-1],
+                {"host": "127.0.0.1", "username": "robot", "port": 2222},
+            )
+
+        self.run_async(scenario())
+
+    def test_machine_rejects_non_numeric_port(self):
+        manager = ConnectionManager(connect=lambda **_kwargs: None)
+
+        async def scenario():
+            with self.assertRaises(ConfigurationError):
+                await manager.get("robot@127.0.0.1:ssh")
+            with self.assertRaises(ConfigurationError):
+                await manager.get("robot@127.0.0.1:")
+
+        self.run_async(scenario())
+
+    def test_env_can_provide_ssh_key_and_known_hosts(self):
+        attempts = []
+        connection = FakeConnection()
+
+        async def connect(**kwargs):
+            attempts.append(kwargs)
+            return connection
+
+        manager = ConnectionManager(connect=connect)
+
+        async def scenario():
+            with mock.patch.dict(
+                os.environ,
+                {
+                    "CONCERT_LAUNCHER_SSH_KEY": "/tmp/lab_key",
+                    "CONCERT_LAUNCHER_KNOWN_HOSTS": "/tmp/lab_known_hosts",
+                },
+            ):
+                self.assertIs(await manager.get("robot@127.0.0.1:2222"), connection)
+            self.assertEqual(
+                attempts[-1],
+                {
+                    "host": "127.0.0.1",
+                    "username": "robot",
+                    "port": 2222,
+                    "client_keys": ["/tmp/lab_key"],
+                    "known_hosts": "/tmp/lab_known_hosts",
+                },
             )
 
         self.run_async(scenario())

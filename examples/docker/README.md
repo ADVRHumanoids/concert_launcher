@@ -24,6 +24,9 @@ launcher-managed tmux processes survive transport failures.
 Requirements: Docker with Compose v2 and `ssh-keygen` on the host.
 
 ```bash
+# Prepare the lab and leave it running for manual CLI exploration.
+./examples/docker/prepare.sh
+
 # Colored CLI: dependency startup, status, watch, and shutdown.
 ./examples/docker/run.sh cli
 
@@ -39,6 +42,30 @@ Requirements: Docker with Compose v2 and `ssh-keygen` on the host.
 
 The script creates an ephemeral SSH key, builds the lab, runs one example, and
 removes containers, volumes, and keys when the command exits.
+
+`prepare.sh` creates the same ephemeral key and starts the SSH/proxy services,
+but leaves them running. It prints suggested `docker compose run --rm runner ...`
+commands, host-side `concert_launcher` commands, and the cleanup commands to
+use when you are done experimenting.
+
+After `prepare.sh`, the lab is also reachable from the host through loopback
+ports:
+
+| Service | SSH | Control |
+| --- | --- | --- |
+| `ssh-proxy-a` | `127.0.0.1:2222` | `http://127.0.0.1:8474` |
+| `ssh-proxy-b` | `127.0.0.1:2223` | `http://127.0.0.1:8475` |
+
+Source the generated environment file before using the host-facing launcher
+configuration:
+
+```bash
+source examples/docker/.state/host-env
+concert_launcher status
+concert_launcher run heartbeat_a
+concert_launcher watch heartbeat_a
+concert_launcher kill --all
+```
 
 ## Configuration schema
 

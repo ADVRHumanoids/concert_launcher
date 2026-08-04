@@ -21,6 +21,9 @@ services:
     build:
       context: ../..
       dockerfile: tests/integration/ssh-proxy/Dockerfile
+    ports:
+      - "127.0.0.1:2222:22"
+      - "127.0.0.1:8474:8474"
     environment:
       TARGET_HOST: ssh-a
       TARGET_PORT: "22"
@@ -32,6 +35,9 @@ services:
     build:
       context: ../..
       dockerfile: tests/integration/ssh-proxy/Dockerfile
+    ports:
+      - "127.0.0.1:2223:22"
+      - "127.0.0.1:8475:8474"
     environment:
       TARGET_HOST: ssh-b
       TARGET_PORT: "22"
@@ -46,6 +52,10 @@ services:
       dockerfile: tests/integration/runner/Dockerfile
     working_dir: /workspace/examples/docker
     environment:
+      CONCERT_TEST_SSH_A: tester@ssh-proxy-a
+      CONCERT_TEST_SSH_B: tester@ssh-proxy-b
+      CONCERT_TEST_DIRECT_SSH_A: tester@ssh-a
+      CONCERT_TEST_DIRECT_SSH_B: tester@ssh-b
       CONCERT_TEST_PROXY_A: http://ssh-proxy-a:8474
       CONCERT_TEST_PROXY_B: http://ssh-proxy-b:8474
     volumes:

@@ -13,9 +13,10 @@ import yaml
 from concert_launcher import Launcher, RemoteConnectionError
 
 
-CONFIG_PATH = Path(__file__).with_name("launcher.yaml")
+DEFAULT_CONFIG_PATH = Path(__file__).with_name("launcher.yaml")
+CONFIG_PATH = Path(os.environ.get("CONCERT_LAUNCHER_DEFAULT_CONFIG", DEFAULT_CONFIG_PATH))
 PROXY_URL = os.environ.get("CONCERT_TEST_PROXY_A", "http://ssh-proxy-a:8474")
-MACHINE = "tester@ssh-proxy-a"
+MACHINE = os.environ.get("CONCERT_TEST_SSH_A", "tester@ssh-proxy-a")
 
 
 def set_proxy(path):
