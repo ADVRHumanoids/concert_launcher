@@ -94,7 +94,7 @@ async def test_graceful_kill_delivers_sigint_to_remote_process(
 
         status = await launcher.status(process)
         entry = status[session][process]
-        assert entry["state"] == "DEAD"
+        assert entry["state"] == "STOPPED"
         assert await remote_a.run(f"cat {signal_file}") == "SIGINT"
         assert "process exited with code 0" in await remote_a.run(
             f"cat /tmp/{process}.stdout"

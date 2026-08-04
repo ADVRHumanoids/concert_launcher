@@ -175,6 +175,6 @@ async def test_legacy_launcher_window_without_tag_remains_manageable(
 
         assert await launcher.kill(process, graceful=True) is True
         status = await launcher.status(process)
-        assert status[session][process]["state"] == "DEAD"
+        assert status[session][process]["state"] == "STOPPED"
     finally:
         await remote_a.cleanup(session, [process])
